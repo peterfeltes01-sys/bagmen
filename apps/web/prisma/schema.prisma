@@ -1,0 +1,117 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  name      String
+  email     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  matches          Match[]
+  records          Record[]
+  challengeEntries ChallengeEntry[]
+}
+
+model Season {
+  id        String   @id @default(cuid())
+  name      String
+  startDate DateTime
+  endDate   DateTime
+  createdAt DateTime @default(now())
+
+  matches Match[]
+}
+
+model Match {
+  id         String   @id @default(cuid())
+  userId     String
+  seasonId   String?
+  engineHash String
+  totalScore0 Int     @default(0)
+  totalScore1 Int     @default(0)
+  winner     Int?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  user   User    @relation(fields: [userId], references: [id])
+  season Season? @relation(fields: [seasonId], references: [id])
+  frames Frame[]
+}
+
+model Frame {
+  id          String @id @default(cuid())
+  matchId     String
+  frameNumber Int
+  score0      Int    @default(0)
+  score1      Int    @default(0)
+
+  match   Match   @relation(fields: [matchId], references: [id])
+  throws  Throw[]
+}
+
+model Throw {
+  id      String  @id @default(cuid())
+  frameId String
+  bagId   String?
+  teamId  Int
+  seed    Int
+  speed   Float
+  angle   Float
+  spin    Float
+  loft    Float
+  outcome String
+  landingX Float
+  landingY Float
+
+  frame Frame @relation(fields: [frameId], references: [id])
+  bag   Bag?  @relation(fields: [bagId], references: [id])
+}
+
+model Bag {
+  id     String @id @default(cuid())
+  name   String
+  color  String
+  weight Float  @default(0.4536)
+
+  throws Throw[]
+}
+
+model Record {
+  id        String   @id @default(cuid())
+  userId    String
+  type      String
+  value     Float
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+}
+
+model DailyChallenge {
+  id        String   @id @default(cuid())
+  date      DateTime @unique
+  seed      Int
+  config    String
+  createdAt DateTime @default(now())
+
+  entries ChallengeEntry[]
+}
+
+model ChallengeEntry {
+  id          String   @id @default(cuid())
+  userId      String
+  challengeId String
+  score       Int
+  createdAt   DateTime @default(now())
+
+  user      User           @relation(fields: [userId], references: [id])
+  challenge DailyChallenge @relation(fields: [challengeId], references: [id])
+
+  @@unique([userId, challengeId])
+}

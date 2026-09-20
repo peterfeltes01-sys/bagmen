@@ -1,0 +1,14 @@
+{
+  "name": "cornhole-spiel",
+  "private": true,
+  "version": "0.0.1",
+  "scripts": {
+    "dev": "pnpm --filter @cornhole/web dev",
+    "build": "pnpm --filter @cornhole/engine build && pnpm --filter @cornhole/web build",
+    "test": "pnpm --filter @cornhole/engine test",
+    "lint": "pnpm --filter @cornhole/web lint"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0"
+  }
+}
