@@ -1,5 +1,5 @@
 import { ENGINE_HASH } from './config.js'
-import { GameState, ThrowParams, ThrowResult, BagState, BagOutcome, FrameState } from './types.js'
+import { GameState, ThrowParams, ApplyThrowResult, BagState, BagOutcome, FrameState } from './types.js'
 import { simulateThrow } from './physics.js'
 
 const BAGS_PER_TEAM = 4
@@ -27,7 +27,7 @@ export function applyThrow(
   state: GameState,
   params: ThrowParams,
   seed: number,
-): ThrowResult {
+): ApplyThrowResult {
   if (state.phase === 'finished') {
     return { state, trajectory: [], outcome: 'miss', landing: { x: 0.5, y: 0.5 } }
   }

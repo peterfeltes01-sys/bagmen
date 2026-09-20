@@ -1,15 +1,27 @@
 export { createInitialState, applyThrow } from './state.js'
-export { simulateThrow } from './physics.js'
+export { simulateThrow as simulateThrowLegacy } from './physics.js'
+export { simulateThrow } from './simulate.js'
 export { createRng } from './rng.js'
-export { PHYSICS, ENGINE_HASH } from './config.js'
+export { PHYSICS, BOARD, SCATTER, SLIDE, ENGINE_HASH } from './config.js'
+export type { PhysicsConfig } from './config.js'
 export type {
+  // legacy
   GameState,
   ThrowParams,
-  ThrowResult,
+  ApplyThrowResult,
   BagState,
   FrameState,
   BagOutcome,
   Trajectory,
   Point,
-  PhysicsConfig,
+  // new board simulation
+  Rng,
+  BoardState,
+  BagOnBoard,
+  BagSide,
+  FlightType,
+  ThrowInput,
+  ThrowResult,
+  BagResult,
+  SackOutcome,
 } from './types.js'
