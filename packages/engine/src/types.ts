@@ -7,51 +7,6 @@ export interface Point {
   z: number  // cm (height above board surface)
   t: number  // s
 }
-export type Trajectory = Point[]
-
-// ---- Legacy types (used by GameState / applyThrow) ----
-export type BagOutcome = 'hole' | 'board' | 'miss'
-
-export interface BagState {
-  id: string
-  teamId: 0 | 1
-  outcome: BagOutcome
-  landingX: number  // normalised 0-1 on board width
-  landingY: number  // normalised 0-1 on board length
-}
-
-export interface FrameState {
-  frameNumber: number
-  bags: BagState[]
-  score0: number
-  score1: number
-}
-
-export interface GameState {
-  engineHash: string
-  totalScore0: number
-  totalScore1: number
-  currentFrame: number
-  frames: FrameState[]
-  throwsThisFrame: number
-  currentTeam: 0 | 1
-  phase: 'playing' | 'finished'
-  winner?: 0 | 1
-}
-
-export interface ThrowParams {
-  speed: number
-  angle: number
-  spin: number
-  loft: number
-}
-
-export interface ApplyThrowResult {
-  state: GameState
-  trajectory: Trajectory
-  outcome: BagOutcome
-  landing: { x: number; y: number }
-}
 
 // ---- Board simulation types ----
 export type SackOutcome = 'in' | 'on' | 'off'
