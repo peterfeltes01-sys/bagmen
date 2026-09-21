@@ -15,7 +15,7 @@ const TEAM_COLOR    = ['#ef4444', '#3b82f6'] as const
 const TEAM_DARK     = ['#7f1d1d', '#1e3a8a'] as const
 const TEAM_LIGHT    = ['#fecaca', '#bfdbfe'] as const
 const MAX_SWIPE_H   = 0.28
-const FLY_SPEED     = 1.3
+const TRAJ_SLOW     = 1.5   // playback duration multiplier vs. real-time (>1 = slower)
 const SLIDE_MS      = 480
 const SETTLED_MS    = 1400
 const BAGS_PER_TEAM = 4
@@ -340,7 +340,7 @@ function drawBag(
   const { x, y } = bagPos(bx, by, lt)
   const ty  = by / 120
   const hs  = bagHalfSize(ty, lt)   // half of 15 cm side in px
-  const hsY = hs * 0.70              // foreshortened in depth direction
+  const hsY = hs                     // square bag: 15 × 15 cm
   const r   = hs * 0.28             // corner radius
 
   ctx.globalAlpha = alpha
@@ -799,7 +799,7 @@ export function GameCanvas() {
       )
       g.pending = { result, newBoardState, prevBoardBags: prevBags, trajectory, thrownTeam: g.team }
       g.flyStart = performance.now()
-      g.flyDur   = (trajectory[trajectory.length - 1].t / FLY_SPEED) * 1000
+      g.flyDur   = trajectory[trajectory.length - 1].t * TRAJ_SLOW * 1000
       g.phase    = 'flying'
       g.chargeOrig = null; g.chargeCurr = null; g.chargePts = []
     }
