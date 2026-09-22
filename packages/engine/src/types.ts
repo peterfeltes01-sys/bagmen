@@ -1,5 +1,17 @@
 export type Rng = () => number
 
+// ---- Tunable physics config (injected into simulateThrow) ----
+export interface PhysicsConfig {
+  apexRoll:           number  // cm, trajectory apex for roll
+  apexFlat:           number  // cm, trajectory apex for flat/slide
+  apexAirmail:        number  // cm, trajectory apex for airmail
+  slideVRoll:         number  // cm/s, base slide speed for roll
+  slideVFlat:         number  // cm/s, base slide speed for flat/slide
+  slideVAirmail:      number  // cm/s, base slide speed for airmail
+  collisionTransfer:  number  // 0–1, momentum fraction transferred on bag impact
+  pushFriction:       number  // cm/s², deceleration for all sliding bags
+}
+
 // ---- Point / Trajectory ----
 export interface Point {
   x: number  // cm
@@ -46,4 +58,34 @@ export interface BagResult {
 export interface ThrowResult {
   thrownBag: BagResult
   pushedBags: BagResult[]
+}
+
+// ---- Match / Frame types ----
+
+export type AiStyle = 'blocker' | 'airmailer' | 'nervenbundel'
+
+export interface MatchConfig {
+  targetScore: number
+  mustExact: boolean  // must hit targetScore exactly; overshoot doesn't win
+  winBy: number       // minimum margin to win (1 = first to target wins)
+}
+
+export interface FrameState {
+  frameIndex: number
+  throwsLeft: [number, number]
+  activeTeam: 0|1
+  firstThrown: 0|1
+  scores: [number, number]
+  boardState: BoardState
+  roundHoles: Array<{ teamId: 0|1 }>
+}
+
+export interface FrameResult {
+  framePts: [number, number]
+  netPts: [number, number]
+}
+
+export interface MatchStatus {
+  over: boolean
+  winner?: 0|1
 }

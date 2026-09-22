@@ -1,6 +1,28 @@
 // 2.5D perspective projection for cornhole board
 // Coordinate system: x cm (left=negative), y cm (0=board front, 120=board back), z cm (0=surface)
 
+export interface CameraParams {
+  boardFrontY:       number  // front edge as fraction of canvas height (from top)
+  boardBackY:        number  // back edge as fraction of canvas height (from top)
+  boardCenterX:      number  // horizontal center as fraction of canvas width
+  frontWidthFactor:  number  // fhw = (frontY − backY) × this
+  taperFactor:       number  // bhw = fhw × this (back half-width / front half-width)
+  throwZoneY:        number  // throw zone boundary as fraction of canvas height
+  zScale:            number  // render-only vertical scale for bag flight height (1.0 = normal)
+}
+
+// Tuned so the board appears ~0.6:1 depth-to-width from the thrower's view.
+// screen_depth = 0.23h, front_width = 0.38h → ratio ≈ 0.60.
+export const CAM_DEFAULTS: CameraParams = {
+  boardFrontY:      0.68,
+  boardBackY:       0.44,
+  boardCenterX:     0.50,
+  frontWidthFactor: 0.70,
+  taperFactor:      0.43,
+  throwZoneY:       0.77,
+  zScale:           1.00,
+}
+
 export interface Layout {
   cssW: number
   cssH: number
@@ -11,24 +33,18 @@ export interface Layout {
   backRight:  { x: number; y: number }
   throwZoneY: number  // CSS y where throw zone starts
   hudH: number
+  zScale:     number  // render-only z-scale (propagated from CameraParams)
 }
 
-export function makeLayout(w: number, h: number): Layout {
+export function makeLayout(w: number, h: number, cam: CameraParams = CAM_DEFAULTS): Layout {
   const hudH   = Math.max(52, h * 0.075)
-  const frontY = h * 0.68
-  const backY  = h * 0.13
-  const cx     = w * 0.50
-
-  // Board dimensions derived from HEIGHT so the board always appears
-  // roughly 2× deeper than wide (matching the real 120 cm : 60 cm ratio).
-  //   screen_depth = frontY − backY ≈ 0.55 × h
-  //   desired front_width ≈ screen_depth / 2
-  //   → fhw = screen_depth / 4
-  const depth = frontY - backY
-  const fhw   = depth * 0.26    // front half-width  (≈ front_width = depth/2)
-  const bhw   = fhw   * 0.38    // back half-width  (strong perspective taper)
-
-  const throwY = h * 0.76
+  const frontY = h * cam.boardFrontY
+  const backY  = h * cam.boardBackY
+  const cx     = w * cam.boardCenterX
+  const depth  = frontY - backY
+  const fhw    = depth * cam.frontWidthFactor
+  const bhw    = fhw   * cam.taperFactor
+  const throwY = h * cam.throwZoneY
 
   return {
     cssW: w, cssH: h, hudH,
@@ -37,6 +53,7 @@ export function makeLayout(w: number, h: number): Layout {
     backLeft:   { x: cx - bhw, y: backY },
     backRight:  { x: cx + bhw, y: backY },
     throwZoneY: throwY,
+    zScale:     cam.zScale ?? 1,
   }
 }
 
@@ -72,7 +89,7 @@ export function worldPt(wx: number, wy: number, wz: number, lt: Layout): { x: nu
   const ty  = wy / 120
   const { x, y } = bilinear(lt, tx, ty)
   const scale = pxPerCm(ty, lt)
-  return { x, y: y - wz * scale }
+  return { x, y: y - wz * scale * lt.zScale }
 }
 
 // Bag on board surface (z=0)

@@ -1,25 +1,4 @@
-export const ENGINE_HASH = '0.1.0'
-
-export const PHYSICS = {
-  gravity: 9.81,
-  airResistance: 0.025,
-  boardWidth: 0.6096,
-  boardLength: 1.2192,
-  boardAngle: 12,
-  holeRadius: 0.0762,
-  holeX: 0.5,
-  holeY: 0.8125,
-  holeTolerance: 0.015,
-  bagMass: 0.4536,
-  bagDiameter: 0.1524,
-  minSpeed: 3.0,
-  maxSpeed: 8.0,
-  throwingDistance: 4.0,
-  trajectorySteps: 120,
-  dt: 0.016,
-} as const
-
-export type PhysicsConfig = typeof PHYSICS
+import type { PhysicsConfig, MatchConfig } from './types.js'
 
 // ---- Board geometry (cm, origin = centre of front edge) ----
 export const BOARD = {
@@ -42,15 +21,47 @@ export const SCATTER = {
   spread: 23.7, // cm extra for low skill/focus
 } as const
 
-// ---- Slide physics ----
+// ---- Slide simulation constants (not tunable at runtime) ----
 export const SLIDE = {
-  // Base slide speed (cm/s) multiplied by power
-  flatV: 60,
-  rollV: 120,
-  airmailV: 20,
-  // Friction deceleration (cm/s²)
-  fastFriction: 200,  // fast-side-down (slippery)
-  slowFriction: 400,  // slow-side-down (rough)
   maxSteps: 400,
-  dt: 0.016, // s
+  dt: 0.016,  // s
 } as const
+
+// ---- Default physics config ----
+export const PHYSICS_DEFAULTS: PhysicsConfig = {
+  apexRoll:          40,
+  apexFlat:          80,
+  apexAirmail:       300,
+  slideVRoll:        120,
+  slideVFlat:        60,
+  slideVAirmail:     20,
+  collisionTransfer: 1.0,
+  pushFriction:      200,
+}
+
+// ENGINE_HASH is derived from default physics values so it updates automatically
+// when any default changes, keeping seeded replays reproducible.
+function fnv1a(vals: number[]): string {
+  let h = 0x811c9dc5 >>> 0
+  for (const v of vals) {
+    const n = Math.round(v * 1000) >>> 0
+    for (let i = 0; i < 4; i++) {
+      h ^= (n >>> (i * 8)) & 0xff
+      h = Math.imul(h, 0x01000193) >>> 0
+    }
+  }
+  return h.toString(16).padStart(8, '0')
+}
+
+export const DEFAULT_MATCH_CONFIG: MatchConfig = {
+  targetScore: 21,
+  mustExact: false,
+  winBy: 1,
+}
+
+export const ENGINE_HASH = fnv1a([
+  PHYSICS_DEFAULTS.apexRoll,         PHYSICS_DEFAULTS.apexFlat,
+  PHYSICS_DEFAULTS.apexAirmail,      PHYSICS_DEFAULTS.slideVRoll,
+  PHYSICS_DEFAULTS.slideVFlat,       PHYSICS_DEFAULTS.slideVAirmail,
+  PHYSICS_DEFAULTS.collisionTransfer, PHYSICS_DEFAULTS.pushFriction,
+])

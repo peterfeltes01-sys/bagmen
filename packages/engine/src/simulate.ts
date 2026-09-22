@@ -1,8 +1,8 @@
-import { BOARD, SCATTER, SLIDE } from './config.js'
+import { BOARD, SCATTER, SLIDE, PHYSICS_DEFAULTS } from './config.js'
 import type {
   BoardState, ThrowInput, ThrowResult,
   BagResult, BagOnBoard, BagSide, SackOutcome,
-  Point, Rng,
+  Point, Rng, PhysicsConfig, FlightType,
 } from './types.js'
 
 // Box-Muller: two independent N(0,1) samples from two U(0,1) draws
@@ -43,9 +43,9 @@ function runSlide(
   thrown: Mover,
   lyingBags: readonly BagOnBoard[],
   friction: number,
+  collisionTransfer: number,
 ): Map<string, { x: number; y: number }> {
   const movers: Mover[] = [{ ...thrown }]
-  // Bags not yet in motion; deleted when they join movers
   const statics = new Map(lyingBags.map(b => [b.id, { x: b.x, y: b.y }]))
   const bagD2 = BOARD.bagDiameter * BOARD.bagDiameter
 
@@ -77,8 +77,11 @@ function runSlide(
         const ny = dy / d
         const dot = m.vx * nx + m.vy * ny
         if (dot <= 0) continue   // already moving apart
-        // Elastic 1-D collision, equal mass: full velocity transfer along normal
-        spawned.push({ id: sid, x: sp.x, y: sp.y, vx: dot * nx, vy: dot * ny })
+        spawned.push({
+          id: sid, x: sp.x, y: sp.y,
+          vx: dot * nx * collisionTransfer,
+          vy: dot * ny * collisionTransfer,
+        })
         m.vx -= dot * nx
         m.vy -= dot * ny
         statics.delete(sid)
@@ -98,11 +101,10 @@ function buildTrajectory(
   landX: number,
   landY: number,
   flightType: FlightType,
+  physics: PhysicsConfig,
 ): Point[] {
-  const APEX = { flat: 80, airmail: 300, roll: 40 } as const
-  const FLIGHT_TIME = { flat: 1.2, airmail: 1.6, roll: 0.9 } as const
-  const apex = APEX[flightType]
-  const T = FLIGHT_TIME[flightType]
+  const apex = { flat: physics.apexFlat, airmail: physics.apexAirmail, roll: physics.apexRoll }[flightType]
+  const T    = { flat: 1.2,             airmail: 1.6,                  roll: 0.9            }[flightType]
   const pts: Point[] = []
   for (let i = 0; i <= 40; i++) {
     const t = i / 40
@@ -116,12 +118,11 @@ function buildTrajectory(
   return pts
 }
 
-type FlightType = 'flat' | 'airmail' | 'roll'
-
 export function simulateThrow(
   state: BoardState,
   throwInput: ThrowInput,
   rng: Rng,
+  physics: PhysicsConfig = PHYSICS_DEFAULTS,
 ): { state: BoardState; trajectory: Point[]; result: ThrowResult } {
   const { teamId, targetX, targetY, power, spin, flightType, skillLevel, focus } = throwInput
 
@@ -129,14 +130,14 @@ export function simulateThrow(
   const bagId = `bag-${((rng() * 0xffffffff) >>> 0).toString(16)}`
 
   // Sample landing point: Gaussian around target
-  const s = throwSigma(skillLevel, focus)
+  const s  = throwSigma(skillLevel, focus)
   const sx = s * (flightType === 'airmail' ? 0.7 : 1.0)
   const sy = s * (flightType === 'roll' ? 1.4 : flightType === 'airmail' ? 0.7 : 1.0)
   const [gx, gy] = boxMuller(rng)
   const landX = targetX + gx * sx
   const landY = targetY + gy * sy
 
-  const trajectory = buildTrajectory(landX, landY, flightType)
+  const trajectory = buildTrajectory(landX, landY, flightType, physics)
 
   // Bags landing directly in the hole need no further simulation
   if (inHole(landX, landY)) {
@@ -164,19 +165,18 @@ export function simulateThrow(
 
   // --- Slide phase ---
   const side: BagSide = spin >= 0 ? 'fast' : 'slow'
-  const baseV = { flat: SLIDE.flatV, roll: SLIDE.rollV, airmail: SLIDE.airmailV }[flightType]
-  const v0 = power * baseV
-  const friction = side === 'fast' ? SLIDE.fastFriction : SLIDE.slowFriction
+  const baseV = { flat: physics.slideVFlat, roll: physics.slideVRoll, airmail: physics.slideVAirmail }[flightType]
+  const v0    = power * baseV
 
   const thrown: Mover = {
     id: bagId,
     x: landX,
     y: landY,
-    vx: spin * v0 * 0.3,  // spin adds lateral component
+    vx: spin * v0 * 0.3,
     vy: v0,
   }
 
-  const finalPos = runSlide(thrown, state.bags, friction)
+  const finalPos = runSlide(thrown, state.bags, physics.pushFriction, physics.collisionTransfer)
 
   // Build updated board state
   const thrownFinal = finalPos.get(bagId)!
