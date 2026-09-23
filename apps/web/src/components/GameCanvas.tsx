@@ -6,7 +6,7 @@ import {
   scoreFrame, advanceThrow, isFrameOver, advanceFrame, checkMatch, aiThrow,
 } from '@cornhole/engine'
 import type {
-  BoardState, ThrowInput, ThrowResult, BagOnBoard, Point, FlightType,
+  BoardState, ThrowInput, ThrowResult, BagOnBoard, BagResult, Point, FlightType,
   PhysicsConfig, FrameState, FrameResult, MatchConfig, AiStyle,
 } from '@cornhole/engine'
 import {
@@ -102,6 +102,16 @@ interface SlideAnim {
   spinType: 'yaw' | 'tumble'
 }
 
+interface LastThrowSummary {
+  outcome:       'in' | 'on' | 'off'
+  flightType:    FlightType
+  pushedBags:    BagResult[]
+  prevBoardBags: readonly BagOnBoard[]
+  thrownTeam:    0|1
+  finalX:        number
+  finalY:        number
+}
+
 interface PendingThrow {
   result: ThrowResult
   newBoardState: BoardState
@@ -158,7 +168,7 @@ interface GameData {
   slides: SlideAnim[]
   slideStart: number
   settledAt: number
-  lastOutcome: 'in' | 'on' | 'off' | null
+  lastThrowSummary: LastThrowSummary | null
   muted: boolean
   helpOpen: boolean
   firstThrowHinted: boolean
@@ -258,7 +268,7 @@ function makeGameData(): GameData {
     slides:          [],
     slideStart:      0,
     settledAt:       0,
-    lastOutcome:     null,
+    lastThrowSummary: null,
     muted:           false,
     helpOpen:        false,
     firstThrowHinted: false,
@@ -373,7 +383,7 @@ function sampleTraj(traj: Point[], tNorm: number): { x: number; y: number; z: nu
 
 function triggerAiThrow(g: GameData, ts: number) {
   const rngAi  = createRng(g.seed ^ 0xdeadbeef)
-  const input  = aiThrow(g.aiStyle, g.frameState.scores, rngAi)
+  const input  = aiThrow(g.aiStyle, g.frameState.scores, rngAi, g.frameState.boardState)
   const prevBags = [...g.frameState.boardState.bags]
   const { state: newBoardState, trajectory, result } = simulateThrow(
     g.frameState.boardState, input, createRng(g.seed), g.physicsConfig,
@@ -455,7 +465,15 @@ function update(g: GameData, ts: number) {
           if (orig) g.frameState.roundHoles.push({ teamId: orig.teamId })
         }
       }
-      g.lastOutcome = r.thrownBag.outcome
+      g.lastThrowSummary = {
+        outcome:       r.thrownBag.outcome,
+        flightType:    g.pending!.thrownFlightType,
+        pushedBags:    [...r.pushedBags],
+        prevBoardBags: g.pending!.prevBoardBags,
+        thrownTeam:    g.pending!.thrownTeam,
+        finalX:        r.thrownBag.finalX,
+        finalY:        r.thrownBag.finalY,
+      }
       g.phase       = 'settled'
       g.settledAt   = ts
       if (r.thrownBag.outcome === 'in') {
@@ -471,10 +489,10 @@ function update(g: GameData, ts: number) {
   if (g.phase === 'settled') {
     if (ts - g.settledAt < g.settledMs) return
 
-    g.frameState  = advanceThrow(g.frameState)
-    g.pending     = null
-    g.lastOutcome = null
-    g.seed        = ((g.seed * 0x19660d + 0x3c6ef35f) >>> 0)
+    g.frameState       = advanceThrow(g.frameState)
+    g.pending          = null
+    g.lastThrowSummary = null
+    g.seed             = ((g.seed * 0x19660d + 0x3c6ef35f) >>> 0)
 
     if (g.uiPhase === 'tutorial') {
       if (g.tutorialThrowDone) {
@@ -577,7 +595,7 @@ function drawSilhouettes(ctx: CanvasRenderingContext2D, lt: Layout) {
   tree(lt.backRight.x +  8, 0.60)
 }
 
-function drawBoard(ctx: CanvasRenderingContext2D, lt: Layout) {
+function drawBoard(ctx: CanvasRenderingContext2D, lt: Layout, boardState?: BoardState) {
   const { frontLeft: FL, frontRight: FR, backLeft: BL, backRight: BR } = lt
 
   ctx.save()
@@ -650,6 +668,26 @@ function drawBoard(ctx: CanvasRenderingContext2D, lt: Layout) {
   hlGrad.addColorStop(0.4, 'rgba(0,0,0,0)')
   ctx.beginPath(); ctx.arc(hPos.x, hPos.y, hr, 0, Math.PI * 2)
   ctx.fillStyle = hlGrad; ctx.fill()
+
+  // Blocker indicator: orange arc on hole rim when a player bag blocks the slide approach
+  const blockingBag = boardState?.bags.find(b =>
+    b.teamId === 0 &&
+    Math.abs(b.x - BOARD.holeX) < BOARD.bagDiameter * 1.3 &&
+    b.y >= BOARD.holeY - 30 &&
+    b.y < BOARD.holeY
+  )
+  if (blockingBag) {
+    const bScreenPos = bagPos(blockingBag.x, blockingBag.y, lt)
+    const angle = Math.atan2(bScreenPos.y - hPos.y, bScreenPos.x - hPos.x)
+    ctx.save()
+    ctx.beginPath()
+    ctx.arc(hPos.x, hPos.y, hr * 1.18, angle - 0.80, angle + 0.80)
+    ctx.strokeStyle = 'rgba(255,120,30,0.65)'
+    ctx.lineWidth   = Math.max(2, hr * 0.28)
+    ctx.lineCap     = 'round'
+    ctx.stroke()
+    ctx.restore()
+  }
 }
 
 /** Draws the bag outline path (bezier, soft corners). Context must be pre-translated to bag center. */
@@ -837,6 +875,7 @@ function drawSlidePreview(
   ctx: CanvasRenderingContext2D,
   aim: { bx: number; by: number },
   flightType: FlightType, physics: PhysicsConfig, lt: Layout,
+  boardState?: BoardState,
 ) {
   const idealP = computeIdealPower(aim.by)
   const baseV  = { flat: physics.slideVFlat, roll: physics.slideVRoll, airmail: physics.slideVAirmail }[flightType]
@@ -846,10 +885,31 @@ function drawSlidePreview(
   const endY = Math.min(BOARD.length + 5, aim.by + dist)
   const p0   = bagPos(aim.bx, aim.by, lt)
   const p1   = bagPos(aim.bx, endY, lt)
+
+  const bagD       = BOARD.bagDiameter
+  const collidingBag = boardState?.bags.find(b => {
+    if (b.y <= aim.by + 2)       return false
+    if (b.y > endY + bagD * 0.5) return false
+    return Math.abs(b.x - aim.bx) < bagD * 0.85
+  })
+
   ctx.save()
-  ctx.beginPath(); ctx.moveTo(p0.x, p0.y); ctx.lineTo(p1.x, p1.y)
-  ctx.strokeStyle = 'rgba(255,230,50,0.40)'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 4])
-  ctx.stroke(); ctx.setLineDash([]); ctx.restore()
+  if (collidingBag) {
+    const collY  = Math.min(collidingBag.y, endY)
+    const collP  = bagPos(aim.bx, collY, lt)
+    ctx.beginPath(); ctx.moveTo(p0.x, p0.y); ctx.lineTo(collP.x, collP.y)
+    ctx.strokeStyle = 'rgba(255,140,30,0.55)'; ctx.lineWidth = 2; ctx.setLineDash([4, 4])
+    ctx.stroke(); ctx.setLineDash([])
+    const r = 5
+    ctx.strokeStyle = 'rgba(255,110,20,0.90)'; ctx.lineWidth = 2.5; ctx.lineCap = 'round'
+    ctx.beginPath(); ctx.moveTo(collP.x - r, collP.y - r); ctx.lineTo(collP.x + r, collP.y + r); ctx.stroke()
+    ctx.beginPath(); ctx.moveTo(collP.x + r, collP.y - r); ctx.lineTo(collP.x - r, collP.y + r); ctx.stroke()
+  } else {
+    ctx.beginPath(); ctx.moveTo(p0.x, p0.y); ctx.lineTo(p1.x, p1.y)
+    ctx.strokeStyle = 'rgba(255,230,50,0.40)'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 4])
+    ctx.stroke(); ctx.setLineDash([])
+  }
+  ctx.restore()
 }
 
 function drawTrajectoryLine(
@@ -1144,9 +1204,30 @@ function drawThrowZone(ctx: CanvasRenderingContext2D, g: GameData, lt: Layout, t
   }
 }
 
-function drawOutcomeLabel(ctx: CanvasRenderingContext2D, outcome: 'in' | 'on' | 'off', lt: Layout) {
-  const label = outcome === 'in' ? 'HOLE!' : outcome === 'on' ? 'ON BOARD' : 'MISS'
-  const color = outcome === 'in' ? '#fcd34d' : outcome === 'on' ? '#86efac' : '#fca5a5'
+function computeActionLabel(s: LastThrowSummary): { label: string; color: string } {
+  const { outcome, flightType, pushedBags, prevBoardBags, thrownTeam, finalX, finalY } = s
+  const pushedIn       = pushedBags.some(pb => pb.outcome === 'in')
+  const clearedOpponent = pushedBags.some(pb => {
+    const orig = prevBoardBags.find(b => b.id === pb.id)
+    return orig && orig.teamId !== thrownTeam && pb.outcome === 'off'
+  })
+  if (outcome === 'in') {
+    if (pushedIn)               return { label: 'Durchgeschoben!', color: '#fcd34d' }
+    if (flightType === 'airmail') return { label: 'Airmail!',      color: '#fcd34d' }
+    return { label: 'Loch!', color: '#fcd34d' }
+  }
+  if (outcome === 'on') {
+    if (pushedIn)         return { label: 'Durchgeschoben!',   color: '#fcd34d' }
+    if (clearedOpponent)  return { label: 'Abgeräumt! +1',     color: '#fb923c' }
+    const dx = finalX - BOARD.holeX, dy = finalY - BOARD.holeY
+    if (dy < 0 && Math.sqrt(dx * dx + dy * dy) < 28) return { label: 'Blocker gesetzt! +1', color: '#86efac' }
+    return { label: 'Brett +1', color: '#86efac' }
+  }
+  return { label: 'Vorbei', color: '#fca5a5' }
+}
+
+function drawOutcomeLabel(ctx: CanvasRenderingContext2D, s: LastThrowSummary, lt: Layout) {
+  const { label, color } = computeActionLabel(s)
   const cx = lt.cssW / 2
   const cy = (lt.frontLeft.y + lt.backLeft.y) / 2
   ctx.save()
@@ -1599,7 +1680,7 @@ function render(ctx: CanvasRenderingContext2D, g: GameData, ts: number, bagDefor
 
   drawBackground(ctx, lt)
   drawSilhouettes(ctx, lt)
-  drawBoard(ctx, lt)
+  drawBoard(ctx, lt, fs.boardState)
 
   if (g.debugMode) drawDebugOverlay(ctx, lt)
 
@@ -1615,7 +1696,7 @@ function render(ctx: CanvasRenderingContext2D, g: GameData, ts: number, bagDefor
     }
     if (fs.activeTeam === 0) {
       drawCrosshair(ctx, g.aim.bx, g.aim.by, lt)
-      drawSlidePreview(ctx, g.aim, g.flightType, g.physicsConfig, lt)
+      drawSlidePreview(ctx, g.aim, g.flightType, g.physicsConfig, lt, fs.boardState)
       if (g.phase === 'charging' && g.previewTraj) {
         const maxZ = (lt.frontLeft.y - lt.hudH - 12) / (pxPerCm(0, lt) * Math.max(0.01, lt.zScale))
         drawTrajectoryLine(ctx, g.previewTraj, lt, 1, 'rgba(255,240,100,0.30)', true, maxZ)
@@ -1670,8 +1751,8 @@ function render(ctx: CanvasRenderingContext2D, g: GameData, ts: number, bagDefor
     }
   }
 
-  if (g.phase === 'settled' && g.lastOutcome) {
-    drawOutcomeLabel(ctx, g.lastOutcome, lt)
+  if (g.phase === 'settled' && g.lastThrowSummary) {
+    drawOutcomeLabel(ctx, g.lastThrowSummary, lt)
   }
 
   ctx.restore()
