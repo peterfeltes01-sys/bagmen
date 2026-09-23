@@ -481,7 +481,7 @@ function update(g: GameData, ts: number) {
     return
   }
 
-  const zoomTarget = (g.phase === 'idle' || g.phase === 'charging' || g.phase === 'settled')
+  const zoomTarget = (g.phase === 'flying' || g.phase === 'sliding')
     ? 1 + 0.06 * g.cameraZoomStr : 1.0
   g.camZoom = g.camZoom + (zoomTarget - g.camZoom) * 0.08
 
