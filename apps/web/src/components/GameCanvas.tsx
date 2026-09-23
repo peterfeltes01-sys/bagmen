@@ -1469,6 +1469,7 @@ export function GameCanvas() {
     const ctx = canvas.getContext('2d')
     if (!ctx) return
 
+    const debugAllowed = new URLSearchParams(window.location.search).get('debug') === '1'
     const g = makeGameData()
     const bagDeforms = new Map<string, BagDeform>()
     let dpr   = 1
@@ -1958,7 +1959,7 @@ export function GameCanvas() {
     }
 
     function onKeyDown(e: KeyboardEvent) {
-      if (e.key === 'd' || e.key === 'D') {
+      if ((e.key === 'd' || e.key === 'D') && debugAllowed) {
         g.debugMode = !g.debugMode
         if (g.debugMode) panelOpen = true
         refreshPanel()
