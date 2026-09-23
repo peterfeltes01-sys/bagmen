@@ -10,6 +10,7 @@ export interface PhysicsConfig {
   slideVAirmail:      number  // cm/s, base slide speed for airmail
   collisionTransfer:  number  // 0–1, momentum fraction transferred on bag impact
   pushFriction:       number  // cm/s², deceleration for all sliding bags
+  spinCurvature:      number  // cm, max mid-flight lateral bow at spin=±1
 }
 
 // ---- Point / Trajectory ----

@@ -102,14 +102,16 @@ function buildTrajectory(
   landY: number,
   flightType: FlightType,
   physics: PhysicsConfig,
+  spin: number,
 ): Point[] {
   const apex = { flat: physics.apexFlat, airmail: physics.apexAirmail, roll: physics.apexRoll }[flightType]
   const T    = { flat: 1.2,             airmail: 1.6,                  roll: 0.9            }[flightType]
   const pts: Point[] = []
   for (let i = 0; i <= 40; i++) {
     const t = i / 40
+    // Lateral bow: parabolic arc toward spin side, peaks at mid-flight, resolves at landing
     pts.push({
-      x: landX * t,
+      x: landX * t + spin * physics.spinCurvature * 4 * t * (1 - t),
       y: BOARD.throwLineY + (landY - BOARD.throwLineY) * t,
       z: (1 - t) * BOARD.releaseZ + apex * 4 * t * (1 - t),
       t: t * T,
@@ -137,7 +139,7 @@ export function simulateThrow(
   const landX = targetX + gx * sx
   const landY = targetY + gy * sy
 
-  const trajectory = buildTrajectory(landX, landY, flightType, physics)
+  const trajectory = buildTrajectory(landX, landY, flightType, physics, spin)
 
   // Bags landing directly in the hole need no further simulation
   if (inHole(landX, landY)) {

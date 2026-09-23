@@ -37,6 +37,7 @@ export const PHYSICS_DEFAULTS: PhysicsConfig = {
   slideVAirmail:     20,
   collisionTransfer: 1.0,
   pushFriction:      200,
+  spinCurvature:     20,
 }
 
 // ENGINE_HASH is derived from default physics values so it updates automatically
@@ -60,8 +61,9 @@ export const DEFAULT_MATCH_CONFIG: MatchConfig = {
 }
 
 export const ENGINE_HASH = fnv1a([
-  PHYSICS_DEFAULTS.apexRoll,         PHYSICS_DEFAULTS.apexFlat,
-  PHYSICS_DEFAULTS.apexAirmail,      PHYSICS_DEFAULTS.slideVRoll,
-  PHYSICS_DEFAULTS.slideVFlat,       PHYSICS_DEFAULTS.slideVAirmail,
+  PHYSICS_DEFAULTS.apexRoll,          PHYSICS_DEFAULTS.apexFlat,
+  PHYSICS_DEFAULTS.apexAirmail,       PHYSICS_DEFAULTS.slideVRoll,
+  PHYSICS_DEFAULTS.slideVFlat,        PHYSICS_DEFAULTS.slideVAirmail,
   PHYSICS_DEFAULTS.collisionTransfer, PHYSICS_DEFAULTS.pushFriction,
+  PHYSICS_DEFAULTS.spinCurvature,
 ])

@@ -65,7 +65,7 @@ const POPUP_DURATION = 900
 // ---- Types ----
 
 type Phase      = 'idle' | 'charging' | 'flying' | 'sliding' | 'settled'
-type UiPhase    = 'setup' | 'playing' | 'frameSummary' | 'matchOver'
+type UiPhase    = 'setup' | 'tutorial' | 'playing' | 'frameSummary' | 'matchOver'
 type BagPattern = 'uni' | 'stripes' | 'checker' | 'dots' | 'logo'
 
 interface BagDesign { color: string; pattern: BagPattern }
@@ -141,6 +141,7 @@ interface GameData {
   spinRateFlat: number
   spinRateAirmail: number
   spinRateRoll: number
+  spinStrength: number   // px/s lateral velocity for spin = 1
   seed: number
   aim: { bx: number; by: number }
   aimDragOrigin: { bx: number; by: number; sx: number; sy: number } | null
@@ -148,7 +149,8 @@ interface GameData {
   phase: Phase
   chargeOrig: { sx: number; sy: number } | null
   chargeCurr: { sx: number; sy: number } | null
-  chargePts: Array<{ sx: number; sy: number }>
+  chargePts: Array<{ sx: number; sy: number; t: number }>
+  spinValue: number       // -1..+1, computed from gesture at release
   previewTraj: Point[] | null
   pending: PendingThrow | null
   flyStart: number
@@ -158,8 +160,11 @@ interface GameData {
   settledAt: number
   lastOutcome: 'in' | 'on' | 'off' | null
   muted: boolean
+  helpOpen: boolean
+  firstThrowHinted: boolean
+  tutorialStep: number      // 0-2 active step; 3 = complete
+  tutorialThrowDone: boolean
   popups: Popup[]
-  soundQueue: string[]
   camZoom: number
   deformStrength: number
   shadowOpacity: number
@@ -236,6 +241,7 @@ function makeGameData(): GameData {
     spinRateFlat:    5.5,
     spinRateAirmail: 4.5,
     spinRateRoll:    9.0,
+    spinStrength:    280,
     seed:            (Date.now() * 0x9e3779b9) >>> 0,
     aim:             { bx: BOARD.holeX, by: BOARD.holeY },
     aimDragOrigin:   null,
@@ -244,6 +250,7 @@ function makeGameData(): GameData {
     chargeOrig:      null,
     chargeCurr:      null,
     chargePts:       [],
+    spinValue:       0,
     previewTraj:     null,
     pending:         null,
     flyStart:        0,
@@ -253,8 +260,11 @@ function makeGameData(): GameData {
     settledAt:       0,
     lastOutcome:     null,
     muted:           false,
+    helpOpen:        false,
+    firstThrowHinted: false,
+    tutorialStep:    0,
+    tutorialThrowDone: false,
     popups:          [],
-    soundQueue:      [],
     camZoom:         1.0,
     deformStrength:  0.70,
     shadowOpacity:   0.80,
@@ -301,26 +311,44 @@ function computeThrowInput(g: GameData): ThrowInput | null {
   const maxPull = (lt.cssH - lt.throwZoneY) * g.pullPowerRatio
   const power   = Math.min(dy / maxPull, 1)
   const dx      = c.sx - o.sx
-  const lateralAngle = Math.atan2(dx, Math.max(1, dy))
 
-  const targetY  = MIN_LAND_Y + power * (MAX_LAND_Y - MIN_LAND_Y)
-  const targetX  = Math.max(-BOARD.halfWidth,
-    Math.min(BOARD.halfWidth, aim.bx + Math.sin(lateralAngle) * 14))
-  const idealP   = computeIdealPower(aim.by)
-  const inZone   = Math.abs(power - idealP) <= g.idealZoneWidth
-  const baseFocus = Math.max(0.3, 0.85 - Math.abs(lateralAngle) / (Math.PI / 4) * 0.55)
-  const focus    = inZone ? Math.min(1.0, baseFocus + 0.12) : baseFocus
+  // Stage 2: lateral offset from the pull line → direction correction ±15 cm
+  // Scale: same sensitivity as the old lateralAngle formula (sin(atan2(dx,dy))·14 ≈ dx/maxPull·14)
+  const corrCm  = Math.max(-15, Math.min(15, (dx / maxPull) * 14))
+  const targetX = Math.max(-BOARD.halfWidth, Math.min(BOARD.halfWidth, aim.bx + corrCm))
+  const targetY = MIN_LAND_Y + power * (MAX_LAND_Y - MIN_LAND_Y)
+
+  const idealP    = computeIdealPower(aim.by)
+  const inZone    = Math.abs(power - idealP) <= g.idealZoneWidth
+  const baseFocus = Math.max(0.3, 0.85 - Math.abs(corrCm) / 15 * 0.55)
+  const focus     = inZone ? Math.min(1.0, baseFocus + 0.12) : baseFocus
 
   return {
     teamId:     0,
     targetX,
     targetY,
     power,
-    spin:       0,
+    spin:       g.spinValue,
     flightType,
     skillLevel: g.playerSkill,
     focus,
   }
+}
+
+// ---- Spin from lateral wrist flick ----
+
+function computeSpin(
+  pts: Array<{ sx: number; sy: number; t: number }>,
+  sensitivity: number,
+): number {
+  if (pts.length < 2) return 0
+  const now = pts[pts.length - 1].t
+  const recent = pts.filter(p => now - p.t <= 300)
+  if (recent.length < 2) return 0
+  const dt = (recent[recent.length - 1].t - recent[0].t) / 1000
+  if (dt < 0.010) return 0
+  const dx = recent[recent.length - 1].sx - recent[0].sx
+  return Math.max(-1, Math.min(1, (dx / dt) / sensitivity))
 }
 
 // ---- Trajectory interpolation ----
@@ -359,6 +387,7 @@ function triggerAiThrow(g: GameData, ts: number) {
 
 function update(g: GameData, ts: number) {
   if (g.uiPhase === 'setup' || g.uiPhase === 'matchOver') return
+  if (g.helpOpen) return
 
   if (g.uiPhase === 'frameSummary') {
     if (ts - g.frameSummaryAt >= FRAME_SUMMARY_MS) {
@@ -409,8 +438,6 @@ function update(g: GameData, ts: number) {
       ]
       g.phase      = 'sliding'
       g.slideStart = ts
-      g.soundQueue.push('impact')
-      if (r.pushedBags.length > 0) g.soundQueue.push('collision')
     }
     return
   }
@@ -431,8 +458,6 @@ function update(g: GameData, ts: number) {
       g.lastOutcome = r.thrownBag.outcome
       g.phase       = 'settled'
       g.settledAt   = ts
-      const snd = r.thrownBag.outcome === 'in' ? 'hole' : r.thrownBag.outcome === 'on' ? 'friction' : 'miss'
-      g.soundQueue.push(snd)
       if (r.thrownBag.outcome === 'in') {
         g.popups.push({ bx: BOARD.holeX, by: BOARD.holeY, text: '+3', startT: ts, teamId: g.pending!.thrownTeam })
       } else if (r.thrownBag.outcome === 'on') {
@@ -450,6 +475,24 @@ function update(g: GameData, ts: number) {
     g.pending     = null
     g.lastOutcome = null
     g.seed        = ((g.seed * 0x19660d + 0x3c6ef35f) >>> 0)
+
+    if (g.uiPhase === 'tutorial') {
+      if (g.tutorialThrowDone) {
+        g.tutorialThrowDone = false
+        g.tutorialStep++
+        g.frameState = makeFrameState()
+        if (g.tutorialStep >= 3) {
+          try { localStorage.setItem('cornhole-tutorial-done', '1') } catch {}
+          g.uiPhase = 'setup'
+        }
+      } else if (isFrameOver(g.frameState)) {
+        g.frameState = makeFrameState()
+      } else {
+        g.frameState = { ...g.frameState, activeTeam: 0 }
+      }
+      g.phase = 'idle'
+      return
+    }
 
     if (isFrameOver(g.frameState)) {
       const scoring = scoreFrame(g.frameState.boardState, g.frameState.roundHoles)
@@ -475,8 +518,9 @@ function update(g: GameData, ts: number) {
     return
   }
 
-  // Idle: AI auto-throw
-  if (g.phase === 'idle' && g.frameState.activeTeam === 1 && g.aiThrowAt > 0 && ts >= g.aiThrowAt) {
+  // Idle: AI auto-throw (never during tutorial)
+  if (g.phase === 'idle' && g.uiPhase !== 'tutorial' &&
+      g.frameState.activeTeam === 1 && g.aiThrowAt > 0 && ts >= g.aiThrowAt) {
     triggerAiThrow(g, ts)
   }
 }
@@ -888,6 +932,26 @@ function drawHUD(ctx: CanvasRenderingContext2D, g: GameData, lt: Layout) {
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
   ctx.fillText(g.muted ? '✕' : '♪', 6 + mBtnS / 2, mBtnY + mBtnS / 2)
 
+  // Help button (bottom-right of HUD)
+  const hBtnX = W - mBtnS - 6
+  ctx.fillStyle = 'rgba(255,255,255,0.10)'
+  ctx.beginPath(); ctx.roundRect(hBtnX, mBtnY, mBtnS, mBtnS, 4); ctx.fill()
+  ctx.fillStyle = 'rgba(255,255,255,0.50)'
+  ctx.fillText('?', hBtnX + mBtnS / 2, mBtnY + mBtnS / 2)
+
+  // Tutorial: skip button (top-right of HUD)
+  if (g.uiPhase === 'tutorial') {
+    const skipW = Math.round(W * 0.28), skipH = Math.round(H * 0.36)
+    const skipX = W - skipW - 6, skipY = 4
+    ctx.fillStyle = 'rgba(255,255,255,0.10)'
+    ctx.beginPath(); ctx.roundRect(skipX, skipY, skipW, skipH, 5); ctx.fill()
+    ctx.fillStyle = 'rgba(255,255,255,0.45)'
+    ctx.font = `${Math.round(skipH * 0.42)}px system-ui,sans-serif`
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+    ctx.fillText('Überspringen', skipX + skipW / 2, skipY + skipH / 2)
+    g.overlayButtons = [{ x: skipX, y: skipY, w: skipW, h: skipH, tag: 'tutorial-skip' }]
+  }
+
   // Active team indicator (top-right)
   const turnLabel = fs.activeTeam === 0 ? 'Du ▶' : '▶ KI'
   const turnColor = TEAM_COLOR[fs.activeTeam]
@@ -939,7 +1003,7 @@ function drawFlightButtons(ctx: CanvasRenderingContext2D, g: GameData, lt: Layou
   }
 }
 
-function drawThrowZone(ctx: CanvasRenderingContext2D, g: GameData, lt: Layout) {
+function drawThrowZone(ctx: CanvasRenderingContext2D, g: GameData, lt: Layout, ts: number) {
   const { cssW: W, cssH: H, throwZoneY: zy } = lt
   const zh = H - zy
 
@@ -1010,6 +1074,41 @@ function drawThrowZone(ctx: CanvasRenderingContext2D, g: GameData, lt: Layout) {
     ctx.fillStyle = 'rgba(252,211,77,0.22)'
     ctx.fillRect(barX - 2, markerY - zoneH / 2, barW + 4, zoneH)
     ctx.fillStyle = '#fcd34d'; ctx.fillRect(barX - 3, markerY - 1.5, barW + 6, 3)
+
+    // ── Zuglinie + Richtungs-Tick (Stage 2) ──
+    const osx = g.chargeOrig.sx
+    const csx = g.chargeCurr.sx
+    ctx.save()
+    ctx.strokeStyle = 'rgba(255,255,255,0.22)'
+    ctx.lineWidth = 1.5; ctx.setLineDash([2, 4])
+    ctx.beginPath(); ctx.moveTo(osx, zy + 8); ctx.lineTo(osx, bagY - ir); ctx.stroke()
+    ctx.setLineDash([])
+    if (Math.abs(csx - osx) > 4) {
+      const dir = csx > osx ? 1 : -1
+      ctx.strokeStyle = 'rgba(255,230,50,0.80)'; ctx.lineWidth = 2
+      ctx.beginPath(); ctx.moveTo(osx, bagY - ir); ctx.lineTo(csx, bagY - ir); ctx.stroke()
+      ctx.beginPath()
+      ctx.moveTo(csx, bagY - ir)
+      ctx.lineTo(csx - dir * 6, bagY - ir - 4)
+      ctx.lineTo(csx - dir * 6, bagY - ir + 4)
+      ctx.closePath(); ctx.fillStyle = 'rgba(255,230,50,0.80)'; ctx.fill()
+    }
+    ctx.restore()
+
+    // ── Drall-Indikator (Stage 3) ──
+    const spinEst = computeSpin(g.chargePts, g.spinStrength)
+    if (Math.abs(spinEst) >= 0.15) {
+      const sDir   = spinEst > 0 ? 1 : -1
+      const alpha  = Math.min(1, 0.45 + Math.abs(spinEst) * 0.55)
+      ctx.save()
+      ctx.globalAlpha = alpha
+      ctx.font = `${Math.round(ir * 1.5)}px system-ui,sans-serif`
+      ctx.textAlign    = sDir > 0 ? 'left' : 'right'
+      ctx.textBaseline = 'middle'
+      ctx.fillStyle    = '#f97316'
+      ctx.fillText(sDir > 0 ? '↻' : '↺', ctr.x + sDir * (ir + 10), bagY)
+      ctx.restore()
+    }
   } else {
     ctx.save()
     ctx.shadowBlur = ir * 0.9; ctx.shadowColor = 'rgba(0,0,0,0.45)'
@@ -1029,6 +1128,17 @@ function drawThrowZone(ctx: CanvasRenderingContext2D, g: GameData, lt: Layout) {
         ctx.beginPath()
         ctx.moveTo(ctr.x - s, ay - s * 0.5); ctx.lineTo(ctr.x, ay + s * 0.5); ctx.lineTo(ctr.x + s, ay - s * 0.5)
         ctx.stroke()
+      }
+
+      // First-throw hint (session-once)
+      if (!g.firstThrowHinted && g.uiPhase === 'playing' && g.frameState.activeTeam === 0) {
+        ctx.save()
+        ctx.globalAlpha = 0.55 + 0.35 * Math.sin(ts / 420)
+        ctx.fillStyle   = 'rgba(255,255,255,0.90)'
+        ctx.font        = `${Math.round(ir * 0.72)}px system-ui,sans-serif`
+        ctx.textAlign   = 'center'; ctx.textBaseline = 'bottom'
+        ctx.fillText('Ziehen & loslassen ↓', ctr.x, ctr.y - ir - 6)
+        ctx.restore()
       }
     }
   }
@@ -1094,6 +1204,110 @@ function drawFrameSummaryOverlay(
 
   // entire screen is a button to advance
   g.overlayButtons = [{ x: 0, y: 0, w: W, h: H, tag: 'frame-continue' }]
+}
+
+// ---- Tutorial step card ----
+
+const TUTORIAL_STEPS = [
+  { title: 'Schritt 1: Kraft',   hint: 'Sack nach unten ziehen und loslassen.',      sub: 'Je weiter du ziehst, desto mehr Kraft.' },
+  { title: 'Schritt 2: Richtung', hint: 'Beim Loslassen seitlich versetzen.',         sub: 'Die gelbe Linie zeigt die Korrektur.' },
+  { title: 'Schritt 3: Drall',   hint: 'Vor dem Loslassen seitlich wischen.',         sub: 'Das orange Symbol zeigt die Drallseite.' },
+]
+
+function drawTutorialCard(ctx: CanvasRenderingContext2D, g: GameData, lt: Layout) {
+  if (g.tutorialStep >= 3) return
+  const step = TUTORIAL_STEPS[g.tutorialStep]
+  const cx   = lt.cssW / 2
+  const cy   = (lt.frontLeft.y + lt.backLeft.y) / 2
+
+  const bw = Math.min(lt.cssW * 0.86, 320)
+  const bh = 72
+  const bx = cx - bw / 2
+  const by = cy - bh / 2
+
+  ctx.fillStyle = 'rgba(0,0,0,0.84)'
+  ctx.roundRect(bx, by, bw, bh, 12); ctx.fill()
+  ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.lineWidth = 1
+  ctx.roundRect(bx, by, bw, bh, 12); ctx.stroke()
+
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+
+  // progress dots
+  for (let i = 0; i < 3; i++) {
+    ctx.beginPath(); ctx.arc(cx + (i - 1) * 14, by + 10, 3.5, 0, Math.PI * 2)
+    ctx.fillStyle = i <= g.tutorialStep ? TEAM_COLOR[0] : 'rgba(255,255,255,0.25)'; ctx.fill()
+  }
+
+  ctx.fillStyle = TEAM_COLOR[0]
+  ctx.font = `bold ${Math.round(bh * 0.24)}px system-ui,sans-serif`
+  ctx.fillText(step.title, cx, by + bh * 0.36)
+
+  ctx.fillStyle = 'rgba(255,255,255,0.82)'
+  ctx.font = `${Math.round(bh * 0.20)}px system-ui,sans-serif`
+  ctx.fillText(step.hint, cx, by + bh * 0.61)
+
+  ctx.fillStyle = 'rgba(255,255,255,0.38)'
+  ctx.font = `${Math.round(bh * 0.16)}px system-ui,sans-serif`
+  ctx.fillText(step.sub, cx, by + bh * 0.84)
+}
+
+// ---- Help overlay ----
+
+function drawHelpOverlay(ctx: CanvasRenderingContext2D, lt: Layout) {
+  const { cssW: W, cssH: H } = lt
+  ctx.fillStyle = 'rgba(0,0,0,0.92)'
+  ctx.fillRect(0, 0, W, H)
+
+  const cx  = W / 2
+  const fsT = Math.round(W * 0.058)
+  const fsH = Math.round(W * 0.038)
+  const fsS = Math.round(W * 0.030)
+  let  y    = lt.hudH + 26
+
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top'
+  ctx.fillStyle = '#fff'
+  ctx.font = `bold ${fsT}px system-ui,sans-serif`
+  ctx.fillText('Steuerung', cx, y); y += fsT + 18
+
+  const gestures = [
+    { label: '1 · Kraft',      desc: 'Sack nach unten ziehen. Idealzone = max. Genauigkeit.' },
+    { label: '2 · Richtung',   desc: 'Beim Loslassen seitlich versetzen. Max. ±15 cm.' },
+    { label: '3 · Drall',      desc: 'Vor dem Loslassen seitlich wischen. 300-ms-Fenster.' },
+  ]
+  for (const g_ of gestures) {
+    ctx.fillStyle = TEAM_COLOR[0]
+    ctx.font = `bold ${fsH}px system-ui,sans-serif`
+    ctx.fillText(g_.label, cx, y); y += fsH + 4
+    ctx.fillStyle = 'rgba(255,255,255,0.65)'
+    ctx.font = `${fsS}px system-ui,sans-serif`
+    ctx.fillText(g_.desc, cx, y); y += fsS + 14
+  }
+
+  y += 10
+  ctx.fillStyle = 'rgba(255,255,255,0.25)'
+  ctx.fillRect(W * 0.1, y, W * 0.8, 1); y += 16
+
+  ctx.fillStyle = '#fff'
+  ctx.font = `bold ${fsH}px system-ui,sans-serif`
+  ctx.fillText('Flugtypen', cx, y); y += fsH + 12
+
+  const flights = [
+    { label: 'Roll',    desc: 'Flache Bahn · viel Rutsch · gut für Kollisionen' },
+    { label: 'Slide',   desc: 'Mittlere Höhe · wenig Rutsch · vielseitig' },
+    { label: 'Airmail', desc: 'Hohe Bahn · kaum Rutsch · direkt ins Loch' },
+  ]
+  for (const f of flights) {
+    ctx.fillStyle = 'rgba(255,255,255,0.75)'
+    ctx.font = `bold ${fsH}px system-ui,sans-serif`
+    ctx.fillText(f.label, cx, y); y += fsH + 4
+    ctx.fillStyle = 'rgba(255,255,255,0.45)'
+    ctx.font = `${fsS}px system-ui,sans-serif`
+    ctx.fillText(f.desc, cx, y); y += fsS + 14
+  }
+
+  ctx.fillStyle = 'rgba(255,255,255,0.30)'
+  ctx.font = `${fsS}px system-ui,sans-serif`
+  ctx.fillText('Tippen zum Schließen', cx, H - 28)
 }
 
 function drawMatchOverOverlay(
@@ -1346,6 +1560,19 @@ function drawSetupOverlay(
     buttons.push({ x: secX, y: by, w: secW, h: bh, tag: `style-${style}` })
   }
 
+  // Tutorial-wiederholen link
+  const tBtnH = Math.round(H * 0.046)
+  const tBtnY = aiLabelY + Math.round(H * 0.040) + styles.length * (bh + gap) + Math.round(H * 0.018)
+  ctx.fillStyle = 'rgba(255,255,255,0.12)'
+  ctx.beginPath(); ctx.roundRect(secX, tBtnY, secW, tBtnH, 6); ctx.fill()
+  ctx.strokeStyle = 'rgba(255,255,255,0.18)'; ctx.lineWidth = 1
+  ctx.beginPath(); ctx.roundRect(secX, tBtnY, secW, tBtnH, 6); ctx.stroke()
+  ctx.fillStyle = 'rgba(255,255,255,0.45)'
+  ctx.font = `${Math.round(tBtnH * 0.44)}px system-ui,sans-serif`
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+  ctx.fillText('Tutorial wiederholen', secX + secW / 2, tBtnY + tBtnH / 2)
+  buttons.push({ x: secX, y: tBtnY, w: secW, h: tBtnH, tag: 'tutorial-replay' })
+
   g.overlayButtons = buttons
 }
 
@@ -1389,6 +1616,10 @@ function render(ctx: CanvasRenderingContext2D, g: GameData, ts: number, bagDefor
     if (fs.activeTeam === 0) {
       drawCrosshair(ctx, g.aim.bx, g.aim.by, lt)
       drawSlidePreview(ctx, g.aim, g.flightType, g.physicsConfig, lt)
+      if (g.phase === 'charging' && g.previewTraj) {
+        const maxZ = (lt.frontLeft.y - lt.hudH - 12) / (pxPerCm(0, lt) * Math.max(0.01, lt.zScale))
+        drawTrajectoryLine(ctx, g.previewTraj, lt, 1, 'rgba(255,240,100,0.30)', true, maxZ)
+      }
     }
   }
 
@@ -1446,16 +1677,20 @@ function render(ctx: CanvasRenderingContext2D, g: GameData, ts: number, bagDefor
   ctx.restore()
 
   drawPopups(ctx, g.popups, lt, ts)
-  drawThrowZone(ctx, g, lt)
+  drawThrowZone(ctx, g, lt, ts)
   drawHUD(ctx, g, lt)
 
-  if (g.uiPhase === 'frameSummary' && g.frameSummaryInfo) {
+  if (g.uiPhase === 'tutorial') {
+    drawTutorialCard(ctx, g, lt)
+  } else if (g.uiPhase === 'frameSummary' && g.frameSummaryInfo) {
     drawFrameSummaryOverlay(ctx, g, lt)
   } else if (g.uiPhase === 'matchOver') {
     drawMatchOverOverlay(ctx, g, lt)
   } else {
     if (g.overlayButtons.length > 0) g.overlayButtons = []
   }
+
+  if (g.helpOpen) drawHelpOverlay(ctx, lt)
 }
 
 // ---- React component ----
@@ -1471,16 +1706,22 @@ export function GameCanvas() {
 
     const debugAllowed = new URLSearchParams(window.location.search).get('debug') === '1'
     const g = makeGameData()
+    // Show tutorial only on first ever session
+    if (!localStorage.getItem('cornhole-tutorial-done')) {
+      g.uiPhase    = 'tutorial'
+      g.tutorialStep = 0
+    }
     const bagDeforms = new Map<string, BagDeform>()
     let dpr   = 1
     let rafId = 0
     let audioCtx: AudioContext | null = null
 
-    function playSound(name: string) {
+    function playSound(name: string, delayS = 0) {
+      if (!audioCtx) return
       try {
-        if (!audioCtx) audioCtx = new AudioContext()
+        if (audioCtx.state === 'suspended') audioCtx.resume()
         const ac = audioCtx
-        const t  = ac.currentTime
+        const t  = ac.currentTime + delayS
 
         function noise(dur: number): AudioBufferSourceNode {
           const frames = Math.ceil(ac.sampleRate * dur)
@@ -1664,6 +1905,7 @@ export function GameCanvas() {
       { key: 'slideVAirmail',     label: 'v-Air cm/s',    min: 2,   max: 80,  step: 1,    fmt: 0 },
       { key: 'collisionTransfer', label: 'Stosskraft',    min: 0,   max: 1,   step: 0.05, fmt: 2 },
       { key: 'pushFriction',      label: 'Reibung cm/s²', min: 50,  max: 800, step: 10,   fmt: 0 },
+      { key: 'spinCurvature',     label: 'Drall-Kurve cm',min: 0,   max: 80,  step: 1,    fmt: 0 },
     ] as Array<{ key: keyof PhysicsConfig; label: string; min: number; max: number; step: number; fmt: number }>)
       .forEach(({ key, label, min, max, step, fmt }) =>
         addSlider(physBody, label, g.physicsConfig[key] as number, min, max, step, fmt, v => {
@@ -1680,6 +1922,7 @@ export function GameCanvas() {
       { key: 'idealZoneWidth', label: 'Idealzone Breite',min: 0,   max: 0.4, step: 0.01, fmt: 2 },
       { key: 'pullPowerRatio', label: 'Zug/Kraft',       min: 0.2, max: 1.0, step: 0.02, fmt: 2 },
       { key: 'aimSensitivity', label: 'Ziel-Empfindl.',  min: 0.05,max: 1.0, step: 0.05, fmt: 2 },
+      { key: 'spinStrength',   label: 'Drall-Empf. px/s',min: 50, max: 600, step: 10,   fmt: 0 },
     ] as Array<{ key: keyof GameData; label: string; min: number; max: number; step: number; fmt: number }>)
       .forEach(({ key, label, min, max, step, fmt }) =>
         addSlider(gameBody, label, g[key] as number, min, max, step, fmt, v => {
@@ -1810,15 +2053,29 @@ export function GameCanvas() {
     let activeAimId   = -1
 
     function onPointerDown(e: PointerEvent) {
+      if (!audioCtx) {
+        try { audioCtx = new AudioContext() } catch {}
+      } else if (audioCtx.state === 'suspended') {
+        audioCtx.resume().catch(() => {})
+      }
+
+      // Close help overlay on any tap
+      if (g.helpOpen) { g.helpOpen = false; return }
+
       const { sx, sy } = canvasXY(e)
 
-      // Mute button (HUD, bottom-left)
+      // HUD buttons (mute bottom-left, help bottom-right)
       if (g.uiPhase !== 'setup') {
         const mH    = g.layout.hudH
         const mBtnS = Math.round(mH * 0.36)
         const mBtnY = mH - mBtnS - 3
         if (sx >= 6 && sx <= 6 + mBtnS && sy >= mBtnY && sy <= mBtnY + mBtnS) {
           g.muted = !g.muted
+          return
+        }
+        const hBtnX = g.layout.cssW - mBtnS - 6
+        if (sx >= hBtnX && sx <= hBtnX + mBtnS && sy >= mBtnY && sy <= mBtnY + mBtnS) {
+          g.helpOpen = true
           return
         }
       }
@@ -1861,11 +2118,22 @@ export function GameCanvas() {
           g.overlayButtons = []
           const now = performance.now()
           g.frameSummaryAt = now - FRAME_SUMMARY_MS  // force immediate advance
+        } else if (btn.tag === 'tutorial-skip') {
+          g.overlayButtons = []
+          try { localStorage.setItem('cornhole-tutorial-done', '1') } catch {}
+          g.uiPhase = 'setup'
+        } else if (btn.tag === 'tutorial-replay') {
+          try { localStorage.removeItem('cornhole-tutorial-done') } catch {}
+          g.tutorialStep      = 0
+          g.tutorialThrowDone = false
+          g.frameState        = makeFrameState()
+          g.uiPhase           = 'tutorial'
+          g.overlayButtons    = []
         }
         return
       }
 
-      if (g.uiPhase !== 'playing') return
+      if (g.uiPhase !== 'playing' && g.uiPhase !== 'tutorial') return
       if (g.phase === 'flying' || g.phase === 'sliding') return
 
       // Only allow player interaction on their turn
@@ -1887,7 +2155,8 @@ export function GameCanvas() {
             g.phase       = 'charging'
             g.chargeOrig  = { sx, sy }
             g.chargeCurr  = { sx, sy }
-            g.chargePts   = [{ sx, sy }]
+            g.chargePts   = [{ sx, sy, t: performance.now() }]
+            g.spinValue   = 0
             g.previewTraj = null
           }
         }
@@ -1905,11 +2174,12 @@ export function GameCanvas() {
 
       if (e.pointerId === activeThrowId) {
         g.chargeCurr = { sx, sy }
-        g.chargePts.push({ sx, sy })
+        g.chargePts.push({ sx, sy, t: performance.now() })
         if (g.chargePts.length > 60) g.chargePts.shift()
         const input = computeThrowInput(g)
         if (input) {
-          const previewInput: ThrowInput = { ...input, skillLevel: 1, focus: 1 }
+          const spinEst = computeSpin(g.chargePts, g.spinStrength)
+          const previewInput: ThrowInput = { ...input, skillLevel: 1, focus: 1, spin: spinEst }
           try {
             const { trajectory } = simulateThrow(g.frameState.boardState, previewInput, createRng(0), g.physicsConfig)
             g.previewTraj = trajectory
@@ -1935,11 +2205,30 @@ export function GameCanvas() {
       if (e.pointerId === activeThrowId) {
         activeThrowId = -1
         if (g.phase !== 'charging') return
+
+        // Stage 3: derive spin from lateral velocity in last 300 ms of gesture
+        g.spinValue = computeSpin(g.chargePts, g.spinStrength)
+
         g.phase       = 'idle'
         g.previewTraj = null
 
         const input = computeThrowInput(g)
-        if (!input) { g.chargeOrig = null; g.chargeCurr = null; g.chargePts = []; return }
+        if (!input) { g.spinValue = 0; g.chargeOrig = null; g.chargeCurr = null; g.chargePts = []; return }
+
+        // Tutorial step completion
+        if (g.uiPhase === 'tutorial') {
+          const corrCm = input.targetX - g.aim.bx
+          if (g.tutorialStep === 0) {
+            g.tutorialThrowDone = true
+          } else if (g.tutorialStep === 1 && Math.abs(corrCm) >= 5) {
+            g.tutorialThrowDone = true
+          } else if (g.tutorialStep === 2 && Math.abs(g.spinValue) >= 0.3) {
+            g.tutorialThrowDone = true
+          }
+        }
+
+        // First-throw hint dismissed
+        if (!g.firstThrowHinted) g.firstThrowHinted = true
 
         const prevBags = [...g.frameState.boardState.bags]
         const { state: newBoardState, trajectory, result } = simulateThrow(
@@ -1966,9 +2255,40 @@ export function GameCanvas() {
       }
     }
 
+    let impactSounded  = false
+    let outcomeSounded = false
+
     function loop(ts: number) {
       const prevPhase = g.phase
+
+      // Pre-schedule sounds to compensate for audio output latency so they
+      // arrive at the speaker at the same moment the visual event is rendered.
+      const latencyMs = (audioCtx?.outputLatency ?? 0.04) * 1000 + 20
+
+      if (!impactSounded && !g.muted && g.phase === 'flying' && g.pending) {
+        const remainMs = (g.flyStart + g.flyDur) - ts
+        if (remainMs <= latencyMs) {
+          const delayS = Math.max(0, remainMs) / 1000
+          playSound('impact', delayS)
+          if (g.pending.result.pushedBags.length > 0) playSound('collision', delayS)
+          playSound('friction', delayS)
+          impactSounded = true
+        }
+      }
+
+      if (!outcomeSounded && !g.muted && g.phase === 'sliding' && g.pending) {
+        const remainMs = (g.slideStart + SLIDE_MS) - ts
+        if (remainMs <= latencyMs) {
+          const delayS = Math.max(0, remainMs) / 1000
+          const outcome = g.pending.result.thrownBag.outcome
+          if (outcome === 'in')       playSound('hole', delayS)
+          else if (outcome === 'off') playSound('miss', delayS)
+          outcomeSounded = true
+        }
+      }
+
       update(g, ts)
+
       if (prevPhase === 'flying' && g.phase === 'sliding' && g.pending) {
         const r   = g.pending.result
         const amp = 0.30 * g.deformStrength
@@ -1976,11 +2296,28 @@ export function GameCanvas() {
         for (const pb of r.pushedBags) {
           bagDeforms.set(pb.id, { landedAt: ts, squashAmp: amp * 0.55, wobbleAmp: 0.28 * g.deformStrength })
         }
+        // fallback: fires only if pre-schedule window was missed (e.g. very short trajectory)
+        if (!g.muted && !impactSounded) {
+          playSound('impact')
+          if (r.pushedBags.length > 0) playSound('collision')
+          playSound('friction')
+          impactSounded = true
+        }
       }
-      while (g.soundQueue.length > 0) {
-        const snd = g.soundQueue.shift()!
-        if (!g.muted) playSound(snd)
+
+      if (prevPhase === 'sliding' && g.phase === 'settled' && g.pending && !g.muted && !outcomeSounded) {
+        const outcome = g.pending.result.thrownBag.outcome
+        if (outcome === 'in')       playSound('hole')
+        else if (outcome === 'off') playSound('miss')
+        outcomeSounded = true
       }
+
+      // Reset per-throw flags when a new throw begins
+      if (prevPhase !== 'flying' && g.phase === 'flying') {
+        impactSounded  = false
+        outcomeSounded = false
+      }
+
       render(ctx!, g, ts, bagDeforms)
       rafId = requestAnimationFrame(loop)
     }
