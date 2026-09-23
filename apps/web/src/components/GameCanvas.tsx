@@ -413,6 +413,40 @@ function sampleTraj(traj: Point[], tNorm: number): { x: number; y: number; z: nu
   return { x: lerp(a.x, b.x, f), y: lerp(a.y, b.y, f), z: lerp(a.z, b.z, f) }
 }
 
+// ---- Debug push diagnostic ----
+
+function logPushThrow(
+  label: string,
+  input: ThrowInput,
+  crosshair: { bx: number; by: number },
+  trajectory: Point[],
+  result: { thrownBag: BagResult; pushedBags: BagResult[] },
+  physics: PhysicsConfig,
+) {
+  if (input.flightType !== 'roll') return
+  const land        = trajectory[trajectory.length - 1]
+  const idealP      = computeIdealPower(crosshair.by, 'roll', physics)
+  const predLandY   = MIN_LAND_Y + idealP * (MAX_LAND_Y - MIN_LAND_Y)
+  const predSlide   = (idealP * physics.slideVRoll) ** 2 / (2 * physics.pushFriction)
+  const actualSlide = result.thrownBag.finalY - land.y
+  const hit         = result.pushedBags.length > 0
+  console.log(`[PUSH ${label}]`, {
+    crosshair_by:  crosshair.by.toFixed(1),
+    targetY_input: input.targetY.toFixed(1),
+    idealPower:    idealP.toFixed(3),
+    actualPower:   input.power.toFixed(3),
+    predLandY:     predLandY.toFixed(1),
+    actualLandY:   land.y.toFixed(1),
+    landDeviation: (land.y - predLandY).toFixed(1),
+    predSlide:     predSlide.toFixed(1),
+    actualSlide:   actualSlide.toFixed(1),
+    finalY:        result.thrownBag.finalY.toFixed(1),
+    outcome:       result.thrownBag.outcome,
+    hit,
+    pushed: result.pushedBags.map(b => `${b.id}→y${b.finalY.toFixed(1)}(${b.outcome})`),
+  })
+}
+
 // ---- Game update ----
 
 function triggerAiThrow(g: GameData, ts: number) {
@@ -422,6 +456,7 @@ function triggerAiThrow(g: GameData, ts: number) {
   const { state: newBoardState, trajectory, result } = simulateThrow(
     g.frameState.boardState, input, createRng(g.seed), g.physicsConfig,
   )
+  logPushThrow('AI', input, { bx: 0, by: input.targetY }, trajectory, result, g.physicsConfig)
   g.pending  = { result, newBoardState, prevBoardBags: prevBags, trajectory, thrownTeam: 1, thrownFlightType: input.flightType }
   g.flyStart = ts
   g.flyDur   = trajectory[trajectory.length - 1].t * g.trajSlow * 1000
@@ -511,10 +546,26 @@ function update(g: GameData, ts: number) {
       }
       g.phase       = 'settled'
       g.settledAt   = ts
-      if (r.thrownBag.outcome === 'in') {
-        g.popups.push({ bx: BOARD.holeX, by: BOARD.holeY, text: '+3', startT: ts, teamId: g.pending!.thrownTeam })
-      } else if (r.thrownBag.outcome === 'on') {
-        g.popups.push({ bx: r.thrownBag.finalX, by: r.thrownBag.finalY, text: '+1', startT: ts, teamId: g.pending!.thrownTeam })
+      {
+        const thrownTeamId = g.pending!.thrownTeam
+        const samePushedIn = r.pushedBags.filter(pb => {
+          if (pb.outcome !== 'in') return false
+          const orig = g.pending!.prevBoardBags.find(b => b.id === pb.id)
+          return orig && orig.teamId === thrownTeamId
+        })
+        const isDoubleHit = r.thrownBag.outcome === 'in' && samePushedIn.length > 0
+        if (isDoubleHit) {
+          g.popups.push({ bx: BOARD.holeX, by: BOARD.holeY, text: '+6', startT: ts, teamId: thrownTeamId })
+        } else if (r.thrownBag.outcome === 'in') {
+          g.popups.push({ bx: BOARD.holeX, by: BOARD.holeY, text: '+3', startT: ts, teamId: thrownTeamId })
+        } else {
+          if (r.thrownBag.outcome === 'on') {
+            g.popups.push({ bx: r.thrownBag.finalX, by: r.thrownBag.finalY, text: '+1', startT: ts, teamId: thrownTeamId })
+          }
+          for (const _ of samePushedIn) {
+            g.popups.push({ bx: BOARD.holeX, by: BOARD.holeY, text: '+3', startT: ts, teamId: thrownTeamId })
+          }
+        }
       }
     }
     return
@@ -1300,9 +1351,15 @@ function computeActionLabel(s: LastThrowSummary): { label: string; color: string
     const orig = prevBoardBags.find(b => b.id === pb.id)
     return orig && orig.teamId !== thrownTeam && pb.outcome === 'off'
   })
+  const samePushedIn = pushedBags.some(pb => {
+    if (pb.outcome !== 'in') return false
+    const orig = prevBoardBags.find(b => b.id === pb.id)
+    return orig && orig.teamId === thrownTeam
+  })
   if (outcome === 'in') {
-    if (pushedIn)               return { label: 'Durchgeschoben!', color: '#fcd34d' }
-    if (flightType === 'airmail') return { label: 'Airmail!',      color: '#fcd34d' }
+    if (samePushedIn)             return { label: 'Doppeltreffer!', color: '#fcd34d' }
+    if (pushedIn)                 return { label: 'Durchgeschoben!', color: '#fcd34d' }
+    if (flightType === 'airmail') return { label: 'Airmail!',        color: '#fcd34d' }
     return { label: 'Loch!', color: '#fcd34d' }
   }
   if (outcome === 'on') {
@@ -2119,9 +2176,10 @@ export function GameCanvas() {
       { key: 'slideVRoll',        label: 'v-Roll cm/s',   min: 20,  max: 300, step: 5,    fmt: 0 },
       { key: 'slideVFlat',        label: 'v-Slide cm/s',  min: 5,   max: 150, step: 5,    fmt: 0 },
       { key: 'slideVAirmail',     label: 'v-Air cm/s',    min: 2,   max: 80,  step: 1,    fmt: 0 },
-      { key: 'collisionTransfer', label: 'Stosskraft',    min: 0,   max: 1,   step: 0.05, fmt: 2 },
-      { key: 'pushFriction',      label: 'Reibung cm/s²', min: 50,  max: 800, step: 10,   fmt: 0 },
-      { key: 'spinCurvature',     label: 'Drall-Kurve cm',min: 0,   max: 80,  step: 1,    fmt: 0 },
+      { key: 'collisionTransfer', label: 'Stosskraft',         min: 0,   max: 1,   step: 0.05, fmt: 2 },
+      { key: 'pushFriction',      label: 'Reibung cm/s²',      min: 50,  max: 800, step: 10,   fmt: 0 },
+      { key: 'pushedFriction',    label: 'Gesch.Reibung cm/s²',min: 10,  max: 400, step: 10,   fmt: 0 },
+      { key: 'spinCurvature',     label: 'Drall-Kurve cm',     min: 0,   max: 80,  step: 1,    fmt: 0 },
     ] as Array<{ key: keyof PhysicsConfig; label: string; min: number; max: number; step: number; fmt: number }>)
       .forEach(({ key, label, min, max, step, fmt }) =>
         addSlider(physBody, label, g.physicsConfig[key] as number, min, max, step, fmt, v => {
@@ -2457,6 +2515,7 @@ export function GameCanvas() {
         const { state: newBoardState, trajectory, result } = simulateThrow(
           g.frameState.boardState, input, createRng(g.seed), g.physicsConfig,
         )
+        logPushThrow('Player', input, g.aim, trajectory, result, g.physicsConfig)
         g.pending    = { result, newBoardState, prevBoardBags: prevBags, trajectory, thrownTeam: 0, thrownFlightType: g.flightType }
         g.flyStart   = performance.now()
         g.flyDur     = trajectory[trajectory.length - 1].t * g.trajSlow * 1000

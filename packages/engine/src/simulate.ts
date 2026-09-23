@@ -37,12 +37,25 @@ function resolveOutcome(x: number, y: number): SackOutcome {
   return 'off'
 }
 
-interface Mover { id: string; x: number; y: number; vx: number; vy: number }
+// Fraction of a bag's area that overlaps with the hole (two circles of equal radius r).
+function holeOverlapFraction(bx: number, by: number): number {
+  const dx = bx - BOARD.holeX
+  const dy = by - BOARD.holeY
+  const d  = Math.sqrt(dx * dx + dy * dy)
+  const r  = BOARD.holeRadius
+  if (d >= 2 * r) return 0
+  if (d < 0.001)  return 1
+  // Lens area for two equal circles: 2r²·arccos(d/2r) − (d/2)·√(4r²−d²)
+  const lensArea = 2 * r * r * Math.acos(d / (2 * r)) - (d / 2) * Math.sqrt(4 * r * r - d * d)
+  return lensArea / (Math.PI * r * r)
+}
+
+interface Mover { id: string; x: number; y: number; vx: number; vy: number; friction: number }
 
 function runSlide(
   thrown: Mover,
   lyingBags: readonly BagOnBoard[],
-  friction: number,
+  pushedFriction: number,
   collisionTransfer: number,
 ): Map<string, { x: number; y: number }> {
   const movers: Mover[] = [{ ...thrown }]
@@ -54,7 +67,7 @@ function runSlide(
     for (const m of movers) {
       const spd = Math.sqrt(m.vx * m.vx + m.vy * m.vy)
       if (spd < 0.01) continue
-      const newSpd = Math.max(0, spd - friction * SLIDE.dt)
+      const newSpd = Math.max(0, spd - m.friction * SLIDE.dt)
       const scale = newSpd / spd
       m.vx *= scale
       m.vy *= scale
@@ -76,11 +89,29 @@ function runSlide(
         const nx = dx / d
         const ny = dy / d
         const dot = m.vx * nx + m.vy * ny
-        if (dot <= 0) continue   // already moving apart
+        if (dot <= 0) {
+          // Overshoot: thrown bag landed past the static bag and is moving away.
+          // Only apply when mover has genuinely overshot in the throw direction.
+          if (m.y > sp.y && m.vy > 0) {
+            const dotR = -dot  // magnitude of the "wrong-way" velocity component
+            spawned.push({
+              id: sid, x: sp.x, y: sp.y,
+              vx: -dotR * nx * collisionTransfer,
+              vy: -dotR * ny * collisionTransfer,
+              friction: pushedFriction,
+            })
+            m.vx += dotR * nx
+            m.vy += dotR * ny
+            statics.delete(sid)
+            break
+          }
+          continue  // genuinely moving apart — no collision
+        }
         spawned.push({
           id: sid, x: sp.x, y: sp.y,
           vx: dot * nx * collisionTransfer,
           vy: dot * ny * collisionTransfer,
+          friction: pushedFriction,
         })
         m.vx -= dot * nx
         m.vy -= dot * ny
@@ -134,7 +165,7 @@ export function simulateThrow(
   // Sample landing point: Gaussian around target
   const s  = throwSigma(skillLevel, focus)
   const sx = s * (flightType === 'airmail' ? 0.7 : 1.0)
-  const sy = s * (flightType === 'roll' ? 1.4 : flightType === 'airmail' ? 0.7 : 1.0)
+  const sy = s * (flightType === 'roll' ? 0.8 : flightType === 'airmail' ? 0.7 : 1.0)
   const [gx, gy] = boxMuller(rng)
   const landX = targetX + gx * sx
   const landY = targetY + gy * sy
@@ -176,9 +207,22 @@ export function simulateThrow(
     y: landY,
     vx: spin * v0 * 0.3,
     vy: v0,
+    friction: physics.pushFriction,
   }
 
-  const finalPos = runSlide(thrown, state.bags, physics.pushFriction, physics.collisionTransfer)
+  const finalPos = runSlide(thrown, state.bags, physics.pushedFriction, physics.collisionTransfer)
+
+  // Hole-rim drag-in: a lying bag that starts partially over the hole may fall in when hit
+  for (const b of state.bags) {
+    const pos = finalPos.get(b.id)
+    if (!pos) continue                   // not hit this throw
+    if (inHole(pos.x, pos.y)) continue  // already slid in naturally
+    const overlap = holeOverlapFraction(b.x, b.y)
+    if (overlap > 0 && rng() < overlap) {
+      pos.x = BOARD.holeX
+      pos.y = BOARD.holeY
+    }
+  }
 
   // Build updated board state
   const thrownFinal = finalPos.get(bagId)!

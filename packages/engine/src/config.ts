@@ -37,6 +37,7 @@ export const PHYSICS_DEFAULTS: PhysicsConfig = {
   slideVAirmail:     20,
   collisionTransfer: 1.0,
   pushFriction:      200,
+  pushedFriction:    100,
   spinCurvature:     20,
 }
 
@@ -65,5 +66,5 @@ export const ENGINE_HASH = fnv1a([
   PHYSICS_DEFAULTS.apexAirmail,       PHYSICS_DEFAULTS.slideVRoll,
   PHYSICS_DEFAULTS.slideVFlat,        PHYSICS_DEFAULTS.slideVAirmail,
   PHYSICS_DEFAULTS.collisionTransfer, PHYSICS_DEFAULTS.pushFriction,
-  PHYSICS_DEFAULTS.spinCurvature,
+  PHYSICS_DEFAULTS.pushedFriction,    PHYSICS_DEFAULTS.spinCurvature,
 ])
