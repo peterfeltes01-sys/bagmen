@@ -46,8 +46,13 @@ const MAX_LAND_Y    = 170
 
 const BAG_Y_FRAC    = 0.38
 
-const FLIGHT_TYPES: FlightType[] = ['roll', 'flat', 'airmail']
-const FLIGHT_LABELS: Record<FlightType, string> = { roll: 'Roll', flat: 'Slide', airmail: 'Airmail' }
+const FLIGHT_TYPES: FlightType[] = ['flat', 'roll', 'airmail']
+const FLIGHT_LABELS: Record<FlightType, string> = { flat: 'Block', roll: 'Push', airmail: 'Airmail' }
+const FLIGHT_DESCS:  Record<FlightType, string> = {
+  flat:    'Sack vor das Loch',
+  roll:    'Sack weiterschieben',
+  airmail: 'Über Blocker ins Loch',
+}
 
 const AI_STYLE_LABELS: Record<AiStyle, string> = {
   blocker:      'Blocker',
@@ -161,7 +166,8 @@ interface GameData {
   chargeCurr: { sx: number; sy: number } | null
   chargePts: Array<{ sx: number; sy: number; t: number }>
   spinValue: number       // -1..+1, computed from gesture at release
-  previewTraj: Point[] | null
+  previewTraj:   Point[] | null
+  previewResult: ThrowResult | null
   pending: PendingThrow | null
   flyStart: number
   flyDur: number
@@ -261,7 +267,8 @@ function makeGameData(): GameData {
     chargeCurr:      null,
     chargePts:       [],
     spinValue:       0,
-    previewTraj:     null,
+    previewTraj:   null,
+    previewResult: null,
     pending:         null,
     flyStart:        0,
     flyDur:          1200,
@@ -361,6 +368,25 @@ function computeSpin(
   return Math.max(-1, Math.min(1, (dx / dt) / sensitivity))
 }
 
+// ---- Intent-based auto-aim ----
+
+function autoAim(
+  flightType: FlightType,
+  boardState: BoardState,
+): { bx: number; by: number } {
+  if (flightType === 'airmail') {
+    return { bx: BOARD.holeX, by: BOARD.holeY }
+  }
+  if (flightType === 'roll') {
+    // Push: aim 10 cm before the bag deepest on the board
+    const bags = [...boardState.bags].sort((a, b) => b.y - a.y)
+    if (bags.length > 0) return { bx: bags[0].x, by: Math.max(10, bags[0].y - 10) }
+    return { bx: BOARD.holeX, by: BOARD.holeY }
+  }
+  // Block (flat): blocker zone in front of hole
+  return { bx: BOARD.holeX, by: BOARD.holeY - 22 }
+}
+
 // ---- Trajectory interpolation ----
 
 function sampleTraj(traj: Point[], tNorm: number): { x: number; y: number; z: number } {
@@ -405,6 +431,7 @@ function update(g: GameData, ts: number) {
         g.uiPhase = 'matchOver'
       } else {
         g.uiPhase = 'playing'
+        if (g.frameState.activeTeam === 0) g.aim = autoAim(g.flightType, g.frameState.boardState)
         if (g.frameState.activeTeam === 1) g.aiThrowAt = ts + AI_THROW_DELAY_MS
       }
     }
@@ -531,6 +558,7 @@ function update(g: GameData, ts: number) {
       g.phase            = 'idle'
     } else {
       g.phase = 'idle'
+      if (g.frameState.activeTeam === 0) g.aim = autoAim(g.flightType, g.frameState.boardState)
       if (g.frameState.activeTeam === 1) g.aiThrowAt = ts + AI_THROW_DELAY_MS
     }
     return
@@ -1045,21 +1073,53 @@ function drawHUD(ctx: CanvasRenderingContext2D, g: GameData, lt: Layout) {
 
 function drawFlightButtons(ctx: CanvasRenderingContext2D, g: GameData, lt: Layout) {
   const { cssW: W, throwZoneY: zy } = lt
-  const bh = 26, btnY = zy + 10, gap = 6
+  const bh = 44, btnY = zy + 8, gap = 5
   const bw = (W - gap * 4) / 3
-  ctx.textBaseline = 'middle'
+
+  // Board-aware suggestion: scan for bags blocking the hole approach
+  const hasBlocker = g.frameState.boardState.bags.some(b =>
+    Math.abs(b.x - BOARD.holeX) < BOARD.bagDiameter * 1.3 &&
+    b.y >= BOARD.holeY - 30 && b.y < BOARD.holeY
+  )
+  const hasBags = g.frameState.boardState.bags.length > 0
+  const suggested: Set<FlightType> = new Set(
+    hasBlocker        ? ['roll', 'airmail'] :
+    hasBags           ? ['flat', 'roll']    :
+                        ['flat', 'airmail']
+  )
+
   for (let i = 0; i < FLIGHT_TYPES.length; i++) {
     const ft     = FLIGHT_TYPES[i]
     const btnX   = gap + i * (bw + gap)
-    const active = g.flightType === ft
-    ctx.beginPath(); ctx.roundRect(btnX, btnY, bw, bh, 5)
-    ctx.fillStyle   = active ? TEAM_COLOR[0] : 'rgba(255,255,255,0.08)'; ctx.fill()
-    ctx.strokeStyle = active ? 'rgba(255,255,255,0.35)' : 'rgba(255,255,255,0.10)'
-    ctx.lineWidth = 1; ctx.stroke()
-    ctx.fillStyle  = active ? '#fff' : 'rgba(255,255,255,0.40)'
-    ctx.font       = `${active ? 'bold ' : ''}${Math.round(bh * 0.50)}px system-ui,sans-serif`
-    ctx.textAlign  = 'center'
-    ctx.fillText(FLIGHT_LABELS[ft], btnX + bw / 2, btnY + bh / 2)
+    const active  = g.flightType === ft
+    const suggest = suggested.has(ft)
+    const dim     = !active && !suggest && hasBags
+
+    ctx.save()
+    if (dim) ctx.globalAlpha = 0.42
+
+    ctx.beginPath(); ctx.roundRect(btnX, btnY, bw, bh, 6)
+    ctx.fillStyle = active  ? TEAM_COLOR[0]
+                  : suggest ? 'rgba(255,255,255,0.13)'
+                  :           'rgba(255,255,255,0.07)'
+    ctx.fill()
+
+    ctx.strokeStyle = active  ? 'rgba(255,255,255,0.45)'
+                    : suggest ? 'rgba(255,210,50,0.45)'
+                    :           'rgba(255,255,255,0.10)'
+    ctx.lineWidth = active ? 1.5 : 1; ctx.stroke()
+
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+
+    ctx.fillStyle = active ? '#fff' : suggest ? 'rgba(255,255,255,0.82)' : 'rgba(255,255,255,0.38)'
+    ctx.font = `${active ? 'bold ' : ''}${Math.round(bh * 0.29)}px system-ui,sans-serif`
+    ctx.fillText(FLIGHT_LABELS[ft], btnX + bw / 2, btnY + bh * 0.35)
+
+    ctx.fillStyle = active ? 'rgba(255,255,255,0.68)' : 'rgba(255,255,255,0.30)'
+    ctx.font = `${Math.round(bh * 0.20)}px system-ui,sans-serif`
+    ctx.fillText(FLIGHT_DESCS[ft], btnX + bw / 2, btnY + bh * 0.72)
+
+    ctx.restore()
   }
 }
 
@@ -1373,9 +1433,9 @@ function drawHelpOverlay(ctx: CanvasRenderingContext2D, lt: Layout) {
   ctx.fillText('Flugtypen', cx, y); y += fsH + 12
 
   const flights = [
-    { label: 'Roll',    desc: 'Flache Bahn · viel Rutsch · gut für Kollisionen' },
-    { label: 'Slide',   desc: 'Mittlere Höhe · wenig Rutsch · vielseitig' },
-    { label: 'Airmail', desc: 'Hohe Bahn · kaum Rutsch · direkt ins Loch' },
+    { label: 'Block',   desc: 'Flat-Slide · Sack vor dem Loch platzieren (+1)' },
+    { label: 'Push',    desc: 'Roll · liegenden Sack weiterschieben' },
+    { label: 'Airmail', desc: 'Hohe Bahn · kaum Rutsch · über Blocker ins Loch' },
   ]
   for (const f of flights) {
     ctx.fillStyle = 'rgba(255,255,255,0.75)'
@@ -1697,9 +1757,55 @@ function render(ctx: CanvasRenderingContext2D, g: GameData, ts: number, bagDefor
     if (fs.activeTeam === 0) {
       drawCrosshair(ctx, g.aim.bx, g.aim.by, lt)
       drawSlidePreview(ctx, g.aim, g.flightType, g.physicsConfig, lt, fs.boardState)
-      if (g.phase === 'charging' && g.previewTraj) {
+      if (g.phase === 'charging' && g.previewTraj && g.previewResult) {
         const maxZ = (lt.frontLeft.y - lt.hudH - 12) / (pxPerCm(0, lt) * Math.max(0.01, lt.zScale))
-        drawTrajectoryLine(ctx, g.previewTraj, lt, 1, 'rgba(255,240,100,0.30)', true, maxZ)
+        const res  = g.previewResult
+        // Solid flight arc to landing point
+        drawTrajectoryLine(ctx, g.previewTraj, lt, 1, 'rgba(255,240,100,0.60)', false, maxZ)
+        // Dashed slide from landing to final rest
+        const traj   = g.previewTraj
+        const landPt = traj[traj.length - 1]
+        if (res.thrownBag.outcome !== 'off') {
+          const p0 = worldPt(landPt.x, landPt.y, 0, lt)
+          const p1 = worldPt(res.thrownBag.finalX, res.thrownBag.finalY, 0, lt)
+          ctx.save()
+          ctx.beginPath(); ctx.moveTo(p0.x, p0.y); ctx.lineTo(p1.x, p1.y)
+          ctx.strokeStyle = 'rgba(255,240,100,0.42)'; ctx.lineWidth = 1.5
+          ctx.setLineDash([4, 4]); ctx.stroke(); ctx.setLineDash([])
+          ctx.restore()
+        }
+        // Push arrows for bags that would be hit
+        if (res.pushedBags.length > 0) {
+          for (const pb of res.pushedBags) {
+            const orig = fs.boardState.bags.find(b => b.id === pb.id)
+            if (!orig) continue
+            const pFrom = bagPos(orig.x, orig.y, lt)
+            const destX = pb.outcome === 'in' ? BOARD.holeX : pb.finalX
+            const destY = pb.outcome === 'in' ? BOARD.holeY : pb.finalY
+            const pTo   = bagPos(destX, destY, lt)
+            const arrowColor = pb.outcome === 'in' ? 'rgba(100,255,120,0.85)' : 'rgba(255,160,40,0.85)'
+            const hs = bagHalfSize(Math.max(0, Math.min(1, orig.y / 120)), lt)
+            ctx.save()
+            // Highlight ring around the bag that will be hit
+            ctx.beginPath(); ctx.arc(pFrom.x, pFrom.y, hs + 3, 0, Math.PI * 2)
+            ctx.strokeStyle = arrowColor; ctx.lineWidth = 2; ctx.stroke()
+            // Arrow to final position
+            const dx = pTo.x - pFrom.x, dy = pTo.y - pFrom.y
+            const d  = Math.sqrt(dx * dx + dy * dy)
+            if (d > 5) {
+              const nx = dx / d, ny = dy / d
+              const al = 9
+              ctx.beginPath(); ctx.moveTo(pFrom.x, pFrom.y); ctx.lineTo(pTo.x, pTo.y)
+              ctx.strokeStyle = arrowColor; ctx.lineWidth = 1.5; ctx.stroke()
+              ctx.beginPath()
+              ctx.moveTo(pTo.x, pTo.y)
+              ctx.lineTo(pTo.x - nx * al - ny * al * 0.5, pTo.y - ny * al + nx * al * 0.5)
+              ctx.lineTo(pTo.x - nx * al + ny * al * 0.5, pTo.y - ny * al - nx * al * 0.5)
+              ctx.closePath(); ctx.fillStyle = arrowColor; ctx.fill()
+            }
+            ctx.restore()
+          }
+        }
       }
     }
   }
@@ -2101,7 +2207,7 @@ export function GameCanvas() {
     function flightButtonAt(sx: number, sy: number): FlightType | null {
       const lt   = g.layout
       const { cssW: W, throwZoneY: zy } = lt
-      const bh = 26, gap = 6, btnY = zy + 10
+      const bh = 44, gap = 5, btnY = zy + 8
       if (sy < btnY || sy > btnY + bh) return null
       const bw = (W - gap * 4) / 3
       for (let i = 0; i < FLIGHT_TYPES.length; i++) {
@@ -2225,20 +2331,25 @@ export function GameCanvas() {
       if (sy >= lt.throwZoneY) {
         if ((g.phase === 'idle' || g.phase === 'settled') && activeThrowId === -1) {
           const lt2 = g.layout
-          const bh = 26, btnY = lt2.throwZoneY + 10
+          const bh = 44, btnY = lt2.throwZoneY + 8
           if (sy >= btnY && sy <= btnY + bh) {
             const ft = flightButtonAt(sx, sy)
-            if (ft) { g.flightType = ft; return }
+            if (ft) {
+              g.flightType = ft
+              g.aim = autoAim(ft, g.frameState.boardState)
+              return
+            }
           }
           if (isOnBag(sx, sy)) {
             activeThrowId = e.pointerId
             canvas!.setPointerCapture(e.pointerId)
-            g.phase       = 'charging'
-            g.chargeOrig  = { sx, sy }
-            g.chargeCurr  = { sx, sy }
-            g.chargePts   = [{ sx, sy, t: performance.now() }]
-            g.spinValue   = 0
-            g.previewTraj = null
+            g.phase         = 'charging'
+            g.chargeOrig    = { sx, sy }
+            g.chargeCurr    = { sx, sy }
+            g.chargePts     = [{ sx, sy, t: performance.now() }]
+            g.spinValue     = 0
+            g.previewTraj   = null
+            g.previewResult = null
           }
         }
       } else {
@@ -2262,9 +2373,10 @@ export function GameCanvas() {
           const spinEst = computeSpin(g.chargePts, g.spinStrength)
           const previewInput: ThrowInput = { ...input, skillLevel: 1, focus: 1, spin: spinEst }
           try {
-            const { trajectory } = simulateThrow(g.frameState.boardState, previewInput, createRng(0), g.physicsConfig)
-            g.previewTraj = trajectory
-          } catch { g.previewTraj = null }
+            const { trajectory, result } = simulateThrow(g.frameState.boardState, previewInput, createRng(0), g.physicsConfig)
+            g.previewTraj   = trajectory
+            g.previewResult = result
+          } catch { g.previewTraj = null; g.previewResult = null }
         }
       }
 
@@ -2290,8 +2402,9 @@ export function GameCanvas() {
         // Stage 3: derive spin from lateral velocity in last 300 ms of gesture
         g.spinValue = computeSpin(g.chargePts, g.spinStrength)
 
-        g.phase       = 'idle'
-        g.previewTraj = null
+        g.phase         = 'idle'
+        g.previewTraj   = null
+        g.previewResult = null
 
         const input = computeThrowInput(g)
         if (!input) { g.spinValue = 0; g.chargeOrig = null; g.chargeCurr = null; g.chargePts = []; return }
