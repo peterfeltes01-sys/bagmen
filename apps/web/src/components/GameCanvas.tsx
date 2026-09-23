@@ -18,9 +18,9 @@ import type { Layout, CameraParams } from '@/lib/projection'
 
 // ---- Constants ----
 
-const TEAM_COLOR    = ['#ef4444', '#3b82f6'] as const
-const TEAM_DARK     = ['#7f1d1d', '#1e3a8a'] as const
-const TEAM_LIGHT    = ['#fecaca', '#bfdbfe'] as const
+const TEAM_COLOR    = ['#FF2D78', '#00E5FF'] as const
+const TEAM_DARK     = ['#7A0038', '#005F7A'] as const
+const TEAM_LIGHT    = ['#FFB3CD', '#B3F4FF'] as const
 
 const BAG_COLORS      = ['#ef4444','#3b82f6','#22c55e','#eab308','#a855f7','#f97316','#ec4899','#14b8a6']
 const BAG_COLOR_NAMES = ['Rot','Blau','Grün','Gelb','Lila','Orange','Pink','Türkis']
@@ -632,30 +632,37 @@ function update(g: GameData, ts: number) {
 
 // ---- Rendering ----
 
-const GRASS_TOP  = '#1a3d12'
-const GRASS_BOT  = '#2d5a1f'
-const SKY_TOP    = '#3a6faa'
-const SKY_HOR    = '#6ba3d0'
-const WOOD_NEAR  = '#c78b3a'
-const WOOD_FAR   = '#a06520'
-const WOOD_FRAME = '#5c300a'
-const HOLE_RIM   = '#3a1e08'
+const BG_TOP     = '#020810'
+const BG_BOT     = '#0D1F30'
+const BG_HOR     = '#071828'
+const BOARD_NEAR = '#0D2137'
+const BOARD_MID  = '#0A1C2E'
+const BOARD_FAR  = '#071525'
+const BOARD_EDGE = '#00E5FF'
+const HOLE_RIM   = '#00E5FF'
 
 function drawBackground(ctx: CanvasRenderingContext2D, lt: Layout) {
   const { cssW: W, cssH: H } = lt
   const backY   = lt.backLeft.y
   const skyFrac = Math.max(0.02, Math.min(0.45, (backY - lt.hudH) / (H - lt.hudH)))
   const grad    = ctx.createLinearGradient(0, lt.hudH, 0, H)
-  grad.addColorStop(0,          SKY_TOP)
-  grad.addColorStop(skyFrac * 0.6, SKY_HOR)
-  grad.addColorStop(skyFrac,    GRASS_TOP)
-  grad.addColorStop(1,          GRASS_BOT)
+  grad.addColorStop(0,             BG_TOP)
+  grad.addColorStop(skyFrac * 0.5, BG_HOR)
+  grad.addColorStop(skyFrac,       BG_BOT)
+  grad.addColorStop(1,             BG_BOT)
   ctx.fillStyle = grad
   ctx.fillRect(0, lt.hudH, W, H - lt.hudH)
 
-  // distant grass lines
-  ctx.strokeStyle = 'rgba(0,0,0,0.10)'
-  ctx.lineWidth = 1
+  // faint horizon glow
+  const glowY = lt.hudH + skyFrac * (H - lt.hudH)
+  const hGrad = ctx.createLinearGradient(0, glowY - 20, 0, glowY + 20)
+  hGrad.addColorStop(0,   'rgba(0,229,255,0)')
+  hGrad.addColorStop(0.5, 'rgba(0,229,255,0.055)')
+  hGrad.addColorStop(1,   'rgba(0,229,255,0)')
+  ctx.fillStyle = hGrad; ctx.fillRect(0, glowY - 20, W, 40)
+
+  // perspective field grid
+  ctx.strokeStyle = 'rgba(0,229,255,0.045)'; ctx.lineWidth = 1
   for (let i = 1; i <= 5; i++) {
     const ty = i / 6
     const lx = lerp(lt.frontLeft.x, lt.backLeft.x, ty)
@@ -667,7 +674,7 @@ function drawBackground(ctx: CanvasRenderingContext2D, lt: Layout) {
 
 function drawSilhouettes(ctx: CanvasRenderingContext2D, lt: Layout) {
   const baseY = lt.backLeft.y + (lt.frontLeft.y - lt.backLeft.y) * 0.18
-  ctx.fillStyle = '#152810'
+  ctx.fillStyle = '#04090D'
 
   function tree(tx: number, scale: number) {
     const h1 = 70 * scale, h2 = 48 * scale, tw = 22 * scale, th = 18 * scale
@@ -685,27 +692,29 @@ function drawSilhouettes(ctx: CanvasRenderingContext2D, lt: Layout) {
 function drawBoard(ctx: CanvasRenderingContext2D, lt: Layout, boardState?: BoardState) {
   const { frontLeft: FL, frontRight: FR, backLeft: BL, backRight: BR } = lt
 
+  // Board shadow
   ctx.save()
-  ctx.shadowBlur = 20; ctx.shadowColor = 'rgba(0,0,0,0.5)'; ctx.shadowOffsetY = 4
+  ctx.shadowBlur = 28; ctx.shadowColor = 'rgba(0,229,255,0.18)'; ctx.shadowOffsetY = 4
   ctx.beginPath()
   ctx.moveTo(FL.x, FL.y); ctx.lineTo(FR.x, FR.y)
   ctx.lineTo(BR.x, BR.y); ctx.lineTo(BL.x, BL.y)
   ctx.closePath()
-  ctx.fillStyle = WOOD_NEAR; ctx.fill()
+  ctx.fillStyle = BOARD_FAR; ctx.fill()
   ctx.restore()
 
+  // Board surface gradient (near → far)
   ctx.beginPath()
   ctx.moveTo(FL.x, FL.y); ctx.lineTo(FR.x, FR.y)
   ctx.lineTo(BR.x, BR.y); ctx.lineTo(BL.x, BL.y)
   ctx.closePath()
-  const woodGrad = ctx.createLinearGradient(lt.cssW / 2, FL.y, lt.cssW / 2, BL.y)
-  woodGrad.addColorStop(0,    WOOD_NEAR)
-  woodGrad.addColorStop(0.55, '#b87a2a')
-  woodGrad.addColorStop(1,    WOOD_FAR)
-  ctx.fillStyle = woodGrad; ctx.fill()
+  const surfGrad = ctx.createLinearGradient(lt.cssW / 2, FL.y, lt.cssW / 2, BL.y)
+  surfGrad.addColorStop(0,    BOARD_NEAR)
+  surfGrad.addColorStop(0.55, BOARD_MID)
+  surfGrad.addColorStop(1,    BOARD_FAR)
+  ctx.fillStyle = surfGrad; ctx.fill()
 
-  // vertical board planks
-  ctx.strokeStyle = 'rgba(255,255,255,0.055)'; ctx.lineWidth = 1
+  // Subtle lane lines
+  ctx.strokeStyle = 'rgba(0,229,255,0.055)'; ctx.lineWidth = 1
   for (let i = 1; i <= 4; i++) {
     const tx = i / 5
     const t0 = worldPt(-30 + tx * 60, 0,   0, lt)
@@ -713,50 +722,52 @@ function drawBoard(ctx: CanvasRenderingContext2D, lt: Layout, boardState?: Board
     ctx.beginPath(); ctx.moveTo(t0.x, t0.y); ctx.lineTo(t1.x, t1.y); ctx.stroke()
   }
 
-  // wood grain lines (diagonal)
-  ctx.strokeStyle = 'rgba(0,0,0,0.055)'; ctx.lineWidth = 0.7
-  for (let cy = 8; cy <= 118; cy += 14) {
-    const p0 = worldPt(-30,  cy,     0, lt)
-    const p1 = worldPt( 30,  cy + 4, 0, lt)
+  // Horizontal lines (depth cues)
+  ctx.strokeStyle = 'rgba(0,229,255,0.035)'; ctx.lineWidth = 0.6
+  for (let cy = 20; cy <= 110; cy += 30) {
+    const p0 = worldPt(-30, cy, 0, lt)
+    const p1 = worldPt( 30, cy, 0, lt)
     ctx.beginPath(); ctx.moveTo(p0.x, p0.y); ctx.lineTo(p1.x, p1.y); ctx.stroke()
   }
 
-  // board frame
+  // Neon cyan frame border with glow
+  ctx.save()
+  ctx.shadowBlur = 8; ctx.shadowColor = 'rgba(0,229,255,0.55)'
   ctx.beginPath()
   ctx.moveTo(FL.x, FL.y); ctx.lineTo(FR.x, FR.y)
   ctx.lineTo(BR.x, BR.y); ctx.lineTo(BL.x, BL.y)
   ctx.closePath()
-  ctx.strokeStyle = WOOD_FRAME; ctx.lineWidth = 2.5; ctx.stroke()
+  ctx.strokeStyle = BOARD_EDGE; ctx.lineWidth = 1.5; ctx.stroke()
+  ctx.restore()
 
-  // hole with depth
+  // Hole
   const hPos = bagPos(BOARD.holeX, BOARD.holeY, lt)
   const hTy  = BOARD.holeY / 120
   const hr   = holeRadius(hTy, lt)
 
-  // rim gradient
-  const rimGrad = ctx.createRadialGradient(hPos.x, hPos.y - hr * 0.2, hr * 0.3, hPos.x, hPos.y, hr * 1.32)
-  rimGrad.addColorStop(0,   '#110600')
-  rimGrad.addColorStop(0.6, '#1a0a02')
-  rimGrad.addColorStop(1,   HOLE_RIM)
-  ctx.beginPath(); ctx.arc(hPos.x, hPos.y, hr * 1.30, 0, Math.PI * 2)
-  ctx.fillStyle = rimGrad; ctx.fill()
+  // Hole rim glow ring
+  ctx.save()
+  ctx.shadowBlur = 12; ctx.shadowColor = 'rgba(0,229,255,0.70)'
+  ctx.beginPath(); ctx.arc(hPos.x, hPos.y, hr * 1.22, 0, Math.PI * 2)
+  ctx.strokeStyle = 'rgba(0,229,255,0.50)'; ctx.lineWidth = Math.max(1.5, hr * 0.18); ctx.stroke()
+  ctx.restore()
 
-  // hole depth
-  const holeGrad = ctx.createRadialGradient(hPos.x, hPos.y - hr * 0.22, 0, hPos.x, hPos.y, hr)
-  holeGrad.addColorStop(0,   '#040100')
-  holeGrad.addColorStop(0.5, '#090300')
-  holeGrad.addColorStop(1,   '#180800')
+  // Hole depth (radial gradient — deep black)
+  const holeGrad = ctx.createRadialGradient(hPos.x, hPos.y - hr * 0.2, 0, hPos.x, hPos.y, hr)
+  holeGrad.addColorStop(0,   '#000408')
+  holeGrad.addColorStop(0.6, '#020810')
+  holeGrad.addColorStop(1,   '#051020')
   ctx.beginPath(); ctx.arc(hPos.x, hPos.y, hr, 0, Math.PI * 2)
   ctx.fillStyle = holeGrad; ctx.fill()
 
-  // top-edge highlight (light from above the player)
-  const hlGrad = ctx.createLinearGradient(hPos.x, hPos.y - hr, hPos.x, hPos.y + hr * 0.4)
-  hlGrad.addColorStop(0,   'rgba(160,80,20,0.22)')
-  hlGrad.addColorStop(0.4, 'rgba(0,0,0,0)')
+  // Hole inner highlight (top crescent)
+  const hlGrad = ctx.createLinearGradient(hPos.x, hPos.y - hr, hPos.x, hPos.y + hr * 0.3)
+  hlGrad.addColorStop(0,   'rgba(0,229,255,0.08)')
+  hlGrad.addColorStop(0.5, 'rgba(0,0,0,0)')
   ctx.beginPath(); ctx.arc(hPos.x, hPos.y, hr, 0, Math.PI * 2)
   ctx.fillStyle = hlGrad; ctx.fill()
 
-  // Blocker indicator: orange arc on hole rim when a player bag blocks the slide approach
+  // Blocker indicator
   const blockingBag = boardState?.bags.find(b =>
     b.teamId === 0 &&
     Math.abs(b.x - BOARD.holeX) < BOARD.bagDiameter * 1.3 &&
@@ -769,7 +780,7 @@ function drawBoard(ctx: CanvasRenderingContext2D, lt: Layout, boardState?: Board
     ctx.save()
     ctx.beginPath()
     ctx.arc(hPos.x, hPos.y, hr * 1.18, angle - 0.80, angle + 0.80)
-    ctx.strokeStyle = 'rgba(255,120,30,0.65)'
+    ctx.strokeStyle = 'rgba(255,230,0,0.75)'
     ctx.lineWidth   = Math.max(2, hr * 0.28)
     ctx.lineCap     = 'round'
     ctx.stroke()
@@ -851,8 +862,8 @@ function drawBag(
     ctx.scale(squashX, squashY)
   }
 
-  ctx.shadowBlur = hs * 0.9; ctx.shadowColor = 'rgba(0,0,0,0.45)'
-  ctx.shadowOffsetY = (angle === 0 && squashY >= 0.98) ? hs * 0.35 : 0
+  ctx.shadowBlur = hs * 1.1; ctx.shadowColor = 'rgba(0,0,0,0.65)'
+  ctx.shadowOffsetY = (angle === 0 && squashY >= 0.98) ? hs * 0.30 : 0
   drawBagShape(ctx, hs, bulge, droop); ctx.fillStyle = color; ctx.fill()
   ctx.shadowBlur = 0; ctx.shadowOffsetY = 0
 
@@ -862,12 +873,12 @@ function drawBag(
 
   if (!flipped) {
     const hl = ctx.createLinearGradient(0, -hs, 0, -hs + hs * 0.5)
-    hl.addColorStop(0, 'rgba(255,255,255,0.22)'); hl.addColorStop(1, 'rgba(255,255,255,0)')
+    hl.addColorStop(0, 'rgba(255,255,255,0.32)'); hl.addColorStop(1, 'rgba(255,255,255,0)')
     drawBagShape(ctx, hs, bulge, droop); ctx.fillStyle = hl; ctx.fill()
   }
 
   drawBagShape(ctx, hs, bulge, droop)
-  ctx.strokeStyle = TEAM_LIGHT[teamId] + '88'; ctx.lineWidth = Math.max(0.8, hs * 0.1); ctx.stroke()
+  ctx.strokeStyle = TEAM_LIGHT[teamId] + 'AA'; ctx.lineWidth = Math.max(1.0, hs * 0.12); ctx.stroke()
 
   ctx.restore()
 }
@@ -923,7 +934,7 @@ function drawGroundShadow(
   ctx.translate(groundPos.x, groundPos.y)
   ctx.scale(1, ry / rx)
   ctx.beginPath(); ctx.arc(0, 0, rx, 0, Math.PI * 2)
-  ctx.fillStyle = 'rgba(0,0,0,0.75)'; ctx.fill()
+  ctx.fillStyle = 'rgba(0,4,10,0.80)'; ctx.fill()
   ctx.restore()
 }
 
@@ -936,8 +947,8 @@ function drawPopups(ctx: CanvasRenderingContext2D, popups: Popup[], lt: Layout, 
     ctx.globalAlpha = 1 - age
     ctx.font = `bold ${Math.round(lt.cssW * 0.062)}px system-ui,sans-serif`
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
-    ctx.shadowBlur = 10; ctx.shadowColor = 'rgba(0,0,0,0.9)'
-    ctx.fillStyle = '#fcd34d'
+    ctx.shadowBlur = 18; ctx.shadowColor = '#FFE600'
+    ctx.fillStyle = '#FFE600'
     ctx.fillText(p.text, x, y - age * 44)
     ctx.restore()
   }
@@ -948,7 +959,7 @@ function drawCrosshair(ctx: CanvasRenderingContext2D, bx: number, by: number, lt
   const ty   = by / 120
   const size = Math.max(10, pxPerCm(ty, lt) * 14)
 
-  ctx.strokeStyle = 'rgba(255,230,50,0.85)'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3])
+  ctx.strokeStyle = 'rgba(0,229,255,0.90)'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3])
   ctx.beginPath(); ctx.arc(x, y, size * 0.7, 0, Math.PI * 2); ctx.stroke()
   ctx.beginPath()
   ctx.moveTo(x - size, y); ctx.lineTo(x - size * 0.38, y)
@@ -1069,51 +1080,77 @@ function drawHUD(ctx: CanvasRenderingContext2D, g: GameData, lt: Layout) {
   const { cssW: W, hudH: H } = lt
   const fs = g.frameState
 
-  ctx.fillStyle = 'rgba(0,0,0,0.72)'
+  // Background
+  ctx.fillStyle = 'rgba(2,8,16,0.94)'
   ctx.fillRect(0, 0, W, H)
+  // bottom separator line with neon glow
+  ctx.save()
+  ctx.shadowBlur = 6; ctx.shadowColor = 'rgba(0,229,255,0.50)'
+  ctx.strokeStyle = 'rgba(0,229,255,0.28)'; ctx.lineWidth = 1
+  ctx.beginPath(); ctx.moveTo(0, H); ctx.lineTo(W, H); ctx.stroke()
+  ctx.restore()
 
   // Scores
+  ctx.save()
   ctx.font = `bold ${Math.round(H * 0.55)}px system-ui,sans-serif`
   ctx.textBaseline = 'middle'
+  ctx.shadowBlur = 12; ctx.shadowColor = TEAM_COLOR[0]
   ctx.fillStyle = TEAM_COLOR[0]; ctx.textAlign = 'right'
   ctx.fillText(String(fs.scores[0]), W * 0.45, H * 0.5)
-  ctx.fillStyle = 'rgba(255,255,255,0.4)'; ctx.textAlign = 'center'
+  ctx.shadowBlur = 0
+  ctx.fillStyle = 'rgba(255,255,255,0.35)'; ctx.textAlign = 'center'
   ctx.font = `${Math.round(H * 0.38)}px system-ui,sans-serif`
   ctx.fillText(':', W * 0.5, H * 0.48)
+  ctx.shadowBlur = 12; ctx.shadowColor = TEAM_COLOR[1]
   ctx.fillStyle = TEAM_COLOR[1]; ctx.textAlign = 'left'
   ctx.font = `bold ${Math.round(H * 0.55)}px system-ui,sans-serif`
   ctx.fillText(String(fs.scores[1]), W * 0.55, H * 0.5)
+  ctx.restore()
 
-  // Frame number (top-left)
-  ctx.fillStyle = 'rgba(255,255,255,0.45)'
-  ctx.font = `${Math.round(H * 0.28)}px system-ui,sans-serif`
+  // "BAGMEN" wordmark (top-left, compact)
+  ctx.save()
+  ctx.fillStyle = '#00E5FF'
+  ctx.font = `bold ${Math.round(H * 0.30)}px system-ui,sans-serif`
   ctx.textAlign = 'left'; ctx.textBaseline = 'top'
-  ctx.fillText(`Fr.${fs.frameIndex + 1}`, 8, 4)
+  ctx.fillText('BAGMEN', 8, 4)
+  ctx.restore()
 
   // Mute button (bottom-left of HUD)
   const mBtnS = Math.round(H * 0.36)
   const mBtnY = H - mBtnS - 3
-  ctx.fillStyle = g.muted ? 'rgba(220,60,60,0.25)' : 'rgba(255,255,255,0.10)'
+  ctx.save()
+  ctx.fillStyle = g.muted ? 'rgba(255,45,120,0.20)' : 'rgba(0,229,255,0.08)'
   ctx.beginPath(); ctx.roundRect(6, mBtnY, mBtnS, mBtnS, 4); ctx.fill()
-  ctx.fillStyle = g.muted ? '#fca5a5' : 'rgba(255,255,255,0.55)'
+  ctx.strokeStyle = g.muted ? 'rgba(255,45,120,0.55)' : 'rgba(0,229,255,0.30)'
+  ctx.lineWidth = 1; ctx.beginPath(); ctx.roundRect(6, mBtnY, mBtnS, mBtnS, 4); ctx.stroke()
+  ctx.fillStyle = g.muted ? TEAM_COLOR[0] : 'rgba(255,255,255,0.55)'
   ctx.font = `${Math.round(mBtnS * 0.64)}px system-ui,sans-serif`
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
   ctx.fillText(g.muted ? '✕' : '♪', 6 + mBtnS / 2, mBtnY + mBtnS / 2)
+  ctx.restore()
 
   // Help button (bottom-right of HUD)
   const hBtnX = W - mBtnS - 6
-  ctx.fillStyle = 'rgba(255,255,255,0.10)'
+  ctx.save()
+  ctx.fillStyle = 'rgba(0,229,255,0.08)'
   ctx.beginPath(); ctx.roundRect(hBtnX, mBtnY, mBtnS, mBtnS, 4); ctx.fill()
-  ctx.fillStyle = 'rgba(255,255,255,0.50)'
+  ctx.strokeStyle = 'rgba(0,229,255,0.30)'; ctx.lineWidth = 1
+  ctx.beginPath(); ctx.roundRect(hBtnX, mBtnY, mBtnS, mBtnS, 4); ctx.stroke()
+  ctx.fillStyle = 'rgba(255,255,255,0.55)'
+  ctx.font = `${Math.round(mBtnS * 0.64)}px system-ui,sans-serif`
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
   ctx.fillText('?', hBtnX + mBtnS / 2, mBtnY + mBtnS / 2)
+  ctx.restore()
 
   // Tutorial: skip button (top-right of HUD)
   if (g.uiPhase === 'tutorial') {
     const skipW = Math.round(W * 0.28), skipH = Math.round(H * 0.36)
     const skipX = W - skipW - 6, skipY = 4
-    ctx.fillStyle = 'rgba(255,255,255,0.10)'
+    ctx.fillStyle = 'rgba(0,229,255,0.10)'
     ctx.beginPath(); ctx.roundRect(skipX, skipY, skipW, skipH, 5); ctx.fill()
-    ctx.fillStyle = 'rgba(255,255,255,0.45)'
+    ctx.strokeStyle = 'rgba(0,229,255,0.35)'; ctx.lineWidth = 1
+    ctx.beginPath(); ctx.roundRect(skipX, skipY, skipW, skipH, 5); ctx.stroke()
+    ctx.fillStyle = 'rgba(255,255,255,0.55)'
     ctx.font = `${Math.round(skipH * 0.42)}px system-ui,sans-serif`
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
     ctx.fillText('Überspringen', skipX + skipW / 2, skipY + skipH / 2)
@@ -1123,10 +1160,20 @@ function drawHUD(ctx: CanvasRenderingContext2D, g: GameData, lt: Layout) {
   // Active team indicator (top-right)
   const turnLabel = fs.activeTeam === 0 ? 'Du ▶' : '▶ KI'
   const turnColor = TEAM_COLOR[fs.activeTeam]
+  ctx.save()
+  ctx.shadowBlur = g.uiPhase === 'playing' ? 8 : 0
+  ctx.shadowColor = turnColor
   ctx.fillStyle = g.uiPhase === 'playing' ? turnColor : 'rgba(255,255,255,0.25)'
   ctx.font = `${Math.round(H * 0.30)}px system-ui,sans-serif`
   ctx.textAlign = 'right'; ctx.textBaseline = 'top'
   ctx.fillText(turnLabel, W - 8, 4)
+  ctx.restore()
+
+  // Frame number (below BAGMEN wordmark)
+  ctx.fillStyle = 'rgba(255,255,255,0.30)'
+  ctx.font = `${Math.round(H * 0.22)}px system-ui,sans-serif`
+  ctx.textAlign = 'left'; ctx.textBaseline = 'top'
+  ctx.fillText(`FR.${fs.frameIndex + 1}`, 8, H * 0.42)
 
   // Bag dots
   const dotR    = Math.max(3, H * 0.09)
@@ -1138,13 +1185,13 @@ function drawHUD(ctx: CanvasRenderingContext2D, g: GameData, lt: Layout) {
   const thrown1 = BAGS_PER_TEAM - fs.throwsLeft[1]
   for (let i = 0; i < BAGS_PER_TEAM; i++) {
     ctx.beginPath(); ctx.arc(base0 + i * spacing, dotY, dotR, 0, Math.PI * 2)
-    ctx.fillStyle = i < thrown0 ? TEAM_COLOR[0] : 'rgba(255,255,255,0.15)'; ctx.fill()
+    ctx.fillStyle = i < thrown0 ? TEAM_COLOR[0] : 'rgba(255,255,255,0.12)'; ctx.fill()
     ctx.beginPath(); ctx.arc(base1 + i * spacing, dotY, dotR, 0, Math.PI * 2)
-    ctx.fillStyle = i < thrown1 ? TEAM_COLOR[1] : 'rgba(255,255,255,0.15)'; ctx.fill()
+    ctx.fillStyle = i < thrown1 ? TEAM_COLOR[1] : 'rgba(255,255,255,0.12)'; ctx.fill()
   }
 
   if (g.debugMode) {
-    ctx.fillStyle = 'rgba(0,255,255,0.8)'
+    ctx.fillStyle = 'rgba(0,229,255,0.8)'
     ctx.font = `${Math.round(H * 0.28)}px monospace`
     ctx.textAlign = 'right'; ctx.textBaseline = 'top'
     ctx.fillText('DEBUG', W - 6, H - 14)
@@ -1178,22 +1225,26 @@ function drawFlightButtons(ctx: CanvasRenderingContext2D, g: GameData, lt: Layou
     ctx.save()
     if (dim) ctx.globalAlpha = 0.42
 
+    if (active) { ctx.shadowBlur = 14; ctx.shadowColor = TEAM_COLOR[0] }
     ctx.beginPath(); ctx.roundRect(btnX, btnY, bw, bh, 6)
-    ctx.fillStyle = active  ? TEAM_COLOR[0]
-                  : suggest ? 'rgba(255,255,255,0.13)'
-                  :           'rgba(255,255,255,0.07)'
+    ctx.fillStyle = active  ? `${TEAM_COLOR[0]}33`
+                  : suggest ? 'rgba(0,229,255,0.08)'
+                  :           'rgba(255,255,255,0.04)'
     ctx.fill()
+    ctx.shadowBlur = 0
 
-    ctx.strokeStyle = active  ? 'rgba(255,255,255,0.45)'
-                    : suggest ? 'rgba(255,210,50,0.45)'
+    ctx.strokeStyle = active  ? TEAM_COLOR[0]
+                    : suggest ? 'rgba(0,229,255,0.50)'
                     :           'rgba(255,255,255,0.10)'
     ctx.lineWidth = active ? 1.5 : 1; ctx.stroke()
 
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
 
-    ctx.fillStyle = active ? '#fff' : suggest ? 'rgba(255,255,255,0.82)' : 'rgba(255,255,255,0.38)'
+    if (active) { ctx.shadowBlur = 8; ctx.shadowColor = TEAM_COLOR[0] }
+    ctx.fillStyle = active ? TEAM_COLOR[0] : suggest ? '#00E5FF' : 'rgba(255,255,255,0.38)'
     ctx.font = `${active ? 'bold ' : ''}${Math.round(bh * 0.29)}px system-ui,sans-serif`
     ctx.fillText(FLIGHT_LABELS[ft], btnX + bw / 2, btnY + bh * 0.35)
+    ctx.shadowBlur = 0
 
     ctx.fillStyle = active ? 'rgba(255,255,255,0.68)' : 'rgba(255,255,255,0.30)'
     ctx.font = `${Math.round(bh * 0.20)}px system-ui,sans-serif`
@@ -1208,15 +1259,16 @@ function drawThrowZone(ctx: CanvasRenderingContext2D, g: GameData, lt: Layout, t
   const zh = H - zy
 
   const bg = ctx.createLinearGradient(0, zy, 0, H)
-  bg.addColorStop(0, 'rgba(0,0,0,0.55)'); bg.addColorStop(1, 'rgba(0,0,0,0.75)')
+  bg.addColorStop(0, 'rgba(2,8,16,0.82)'); bg.addColorStop(1, 'rgba(2,8,16,0.96)')
   ctx.fillStyle = bg; ctx.fillRect(0, zy, W, zh)
 
-  // separator line
-  const lineColor = g.frameState.activeTeam === 0
-    ? `${TEAM_COLOR[0]}55`
-    : 'rgba(255,255,255,0.10)'
-  ctx.strokeStyle = lineColor; ctx.lineWidth = 1.5
+  // separator line with neon glow
+  ctx.save()
+  const lineColor = g.frameState.activeTeam === 0 ? TEAM_COLOR[0] : 'rgba(0,229,255,0.35)'
+  ctx.shadowBlur = 6; ctx.shadowColor = lineColor
+  ctx.strokeStyle = `${lineColor}55`; ctx.lineWidth = 1.5
   ctx.beginPath(); ctx.moveTo(0, zy); ctx.lineTo(W, zy); ctx.stroke()
+  ctx.restore()
 
   if (g.frameState.activeTeam !== 0) {
     // AI's turn indicator
@@ -1381,8 +1433,14 @@ function drawOutcomeLabel(ctx: CanvasRenderingContext2D, s: LastThrowSummary, lt
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
   const m = ctx.measureText(label)
   const pad = 14
-  ctx.fillStyle = 'rgba(0,0,0,0.7)'
-  ctx.roundRect(cx - m.width / 2 - pad, cy - 22, m.width + pad * 2, 44, 10); ctx.fill()
+  const rx = cx - m.width / 2 - pad, ry = cy - 22, rw = m.width + pad * 2, rh = 44
+  ctx.fillStyle = 'rgba(2,8,16,0.88)'
+  ctx.roundRect(rx, ry, rw, rh, 10); ctx.fill()
+  ctx.save()
+  ctx.shadowBlur = 12; ctx.shadowColor = color
+  ctx.strokeStyle = color; ctx.lineWidth = 1.5
+  ctx.roundRect(rx, ry, rw, rh, 10); ctx.stroke()
+  ctx.shadowBlur = 16; ctx.shadowColor = color
   ctx.fillStyle = color; ctx.fillText(label, cx, cy)
   ctx.restore()
 }
@@ -1401,13 +1459,16 @@ function drawFrameSummaryOverlay(
   const bx = cx - bw / 2
   const by = cy - bh / 2
 
-  ctx.fillStyle = 'rgba(0,0,0,0.82)'
+  ctx.fillStyle = 'rgba(2,8,16,0.90)'
   ctx.roundRect(bx, by, bw, bh, 12); ctx.fill()
-  ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.lineWidth = 1
+  ctx.save()
+  ctx.shadowBlur = 8; ctx.shadowColor = 'rgba(0,229,255,0.45)'
+  ctx.strokeStyle = 'rgba(0,229,255,0.35)'; ctx.lineWidth = 1
   ctx.roundRect(bx, by, bw, bh, 12); ctx.stroke()
+  ctx.restore()
 
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
-  ctx.fillStyle = 'rgba(255,255,255,0.55)'
+  ctx.fillStyle = '#00E5FF'
   ctx.font = `${Math.round(bh * 0.22)}px system-ui,sans-serif`
   ctx.fillText(`Frame ${g.frameState.frameIndex} abgeschlossen`, cx, by + bh * 0.25)
 
@@ -1452,17 +1513,20 @@ function drawTutorialCard(ctx: CanvasRenderingContext2D, g: GameData, lt: Layout
   const bx = cx - bw / 2
   const by = cy - bh / 2
 
-  ctx.fillStyle = 'rgba(0,0,0,0.84)'
+  ctx.fillStyle = 'rgba(2,8,16,0.90)'
   ctx.roundRect(bx, by, bw, bh, 12); ctx.fill()
-  ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.lineWidth = 1
+  ctx.save()
+  ctx.shadowBlur = 8; ctx.shadowColor = 'rgba(0,229,255,0.45)'
+  ctx.strokeStyle = 'rgba(0,229,255,0.35)'; ctx.lineWidth = 1
   ctx.roundRect(bx, by, bw, bh, 12); ctx.stroke()
+  ctx.restore()
 
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
 
   // progress dots
   for (let i = 0; i < 3; i++) {
     ctx.beginPath(); ctx.arc(cx + (i - 1) * 14, by + 10, 3.5, 0, Math.PI * 2)
-    ctx.fillStyle = i <= g.tutorialStep ? TEAM_COLOR[0] : 'rgba(255,255,255,0.25)'; ctx.fill()
+    ctx.fillStyle = i <= g.tutorialStep ? '#00E5FF' : 'rgba(255,255,255,0.20)'; ctx.fill()
   }
 
   ctx.fillStyle = TEAM_COLOR[0]
@@ -1482,7 +1546,7 @@ function drawTutorialCard(ctx: CanvasRenderingContext2D, g: GameData, lt: Layout
 
 function drawHelpOverlay(ctx: CanvasRenderingContext2D, lt: Layout) {
   const { cssW: W, cssH: H } = lt
-  ctx.fillStyle = 'rgba(0,0,0,0.92)'
+  ctx.fillStyle = 'rgba(2,8,16,0.96)'
   ctx.fillRect(0, 0, W, H)
 
   const cx  = W / 2
@@ -1492,9 +1556,13 @@ function drawHelpOverlay(ctx: CanvasRenderingContext2D, lt: Layout) {
   let  y    = lt.hudH + 26
 
   ctx.textAlign = 'center'; ctx.textBaseline = 'top'
-  ctx.fillStyle = '#fff'
+  ctx.save()
+  ctx.shadowBlur = 12; ctx.shadowColor = '#00E5FF'
+  ctx.fillStyle = '#00E5FF'
   ctx.font = `bold ${fsT}px system-ui,sans-serif`
-  ctx.fillText('Steuerung', cx, y); y += fsT + 18
+  ctx.fillText('Steuerung', cx, y)
+  ctx.restore()
+  y += fsT + 18
 
   const gestures = [
     { label: '1 · Kraft',      desc: 'Sack nach unten ziehen. Idealzone = max. Genauigkeit.' },
@@ -1502,7 +1570,7 @@ function drawHelpOverlay(ctx: CanvasRenderingContext2D, lt: Layout) {
     { label: '3 · Drall',      desc: 'Vor dem Loslassen seitlich wischen. 300-ms-Fenster.' },
   ]
   for (const g_ of gestures) {
-    ctx.fillStyle = TEAM_COLOR[0]
+    ctx.fillStyle = '#00E5FF'
     ctx.font = `bold ${fsH}px system-ui,sans-serif`
     ctx.fillText(g_.label, cx, y); y += fsH + 4
     ctx.fillStyle = 'rgba(255,255,255,0.65)'
@@ -1511,12 +1579,16 @@ function drawHelpOverlay(ctx: CanvasRenderingContext2D, lt: Layout) {
   }
 
   y += 10
-  ctx.fillStyle = 'rgba(255,255,255,0.25)'
+  ctx.fillStyle = 'rgba(0,229,255,0.18)'
   ctx.fillRect(W * 0.1, y, W * 0.8, 1); y += 16
 
-  ctx.fillStyle = '#fff'
+  ctx.save()
+  ctx.shadowBlur = 10; ctx.shadowColor = '#00E5FF'
+  ctx.fillStyle = '#00E5FF'
   ctx.font = `bold ${fsH}px system-ui,sans-serif`
-  ctx.fillText('Flugtypen', cx, y); y += fsH + 12
+  ctx.fillText('Flugtypen', cx, y)
+  ctx.restore()
+  y += fsH + 12
 
   const flights = [
     { label: 'Block',   desc: 'Flat-Slide · Sack vor dem Loch platzieren (+1)' },
@@ -1532,7 +1604,7 @@ function drawHelpOverlay(ctx: CanvasRenderingContext2D, lt: Layout) {
     ctx.fillText(f.desc, cx, y); y += fsS + 14
   }
 
-  ctx.fillStyle = 'rgba(255,255,255,0.30)'
+  ctx.fillStyle = 'rgba(255,255,255,0.25)'
   ctx.font = `${fsS}px system-ui,sans-serif`
   ctx.fillText('Tippen zum Schließen', cx, H - 28)
 }
@@ -1541,7 +1613,7 @@ function drawMatchOverOverlay(
   ctx: CanvasRenderingContext2D, g: GameData, lt: Layout,
 ) {
   const { cssW: W, cssH: H } = lt
-  ctx.fillStyle = 'rgba(0,0,0,0.90)'
+  ctx.fillStyle = 'rgba(2,8,16,0.96)'
   ctx.fillRect(0, 0, W, H)
 
   const cx     = W / 2
@@ -1549,9 +1621,12 @@ function drawMatchOverOverlay(
   const winText = winner === 0 ? 'Du gewinnst!' : 'KI gewinnt!'
 
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+  ctx.save()
+  ctx.shadowBlur = 20; ctx.shadowColor = TEAM_COLOR[winner]
   ctx.fillStyle = TEAM_COLOR[winner]
   ctx.font = `bold ${Math.round(W * 0.085)}px system-ui,sans-serif`
   ctx.fillText(winText, cx, H * 0.10)
+  ctx.restore()
 
   ctx.fillStyle = 'rgba(255,255,255,0.65)'
   ctx.font = `${Math.round(W * 0.060)}px system-ui,sans-serif`
@@ -1621,11 +1696,14 @@ function drawMatchOverOverlay(
   const stack = btn2W < 140
 
   function drawBtn(bx: number, by: number, bw: number, label: string, active = false) {
+    ctx.save()
+    if (active) { ctx.shadowBlur = 14; ctx.shadowColor = '#00E5FF' }
     ctx.beginPath(); ctx.roundRect(bx, by, bw, btnH, 8)
-    ctx.fillStyle = active ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.09)'; ctx.fill()
-    ctx.strokeStyle = active ? 'rgba(255,255,255,0.50)' : 'rgba(255,255,255,0.22)'
-    ctx.lineWidth = 1.2; ctx.stroke()
-    ctx.fillStyle = '#fff'
+    ctx.fillStyle = active ? 'rgba(0,229,255,0.15)' : 'rgba(255,255,255,0.07)'; ctx.fill()
+    ctx.strokeStyle = active ? '#00E5FF' : 'rgba(255,255,255,0.22)'
+    ctx.lineWidth = active ? 1.5 : 1; ctx.stroke()
+    if (active) { ctx.shadowBlur = 10; ctx.shadowColor = '#00E5FF' }
+    ctx.fillStyle = active ? '#00E5FF' : '#fff'
     const nomFs = Math.round(btnH * 0.44)
     ctx.font     = `${active ? 'bold ' : ''}${nomFs}px system-ui,sans-serif`
     const tw     = ctx.measureText(label).width
@@ -1633,6 +1711,7 @@ function drawMatchOverOverlay(
     ctx.font     = `${active ? 'bold ' : ''}${fitFs}px system-ui,sans-serif`
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
     ctx.fillText(label, bx + bw / 2, by + btnH / 2)
+    ctx.restore()
   }
 
   drawBtn(btnX, byRow1, btnW, 'Nochmal', true)
@@ -1659,26 +1738,41 @@ function drawSetupOverlay(
   ctx: CanvasRenderingContext2D, g: GameData, lt: Layout,
 ) {
   const { cssW: W, cssH: H } = lt
-  const grad = ctx.createLinearGradient(0, 0, 0, H)
-  grad.addColorStop(0, '#0d1b0a'); grad.addColorStop(1, '#1a3d12')
-  ctx.fillStyle = grad; ctx.fillRect(0, 0, W, H)
+  // Dark near-black background
+  ctx.fillStyle = '#020810'
+  ctx.fillRect(0, 0, W, H)
+  // faint perspective grid
+  ctx.save()
+  ctx.strokeStyle = 'rgba(0,229,255,0.04)'; ctx.lineWidth = 1
+  const gStep = 28
+  for (let x = 0; x < W; x += gStep) {
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke()
+  }
+  for (let y = 0; y < H; y += gStep) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke()
+  }
+  ctx.restore()
 
   const cx      = W / 2
   const secW    = Math.min(W * 0.88, 340)
   const secX    = cx - secW / 2
   const buttons: OverlayButton[] = []
 
+  // BAGMEN logo
+  ctx.save()
+  ctx.shadowBlur = 18; ctx.shadowColor = '#00E5FF'
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
-  ctx.fillStyle = '#fff'
-  ctx.font = `bold ${Math.round(W * 0.10)}px system-ui,sans-serif`
-  ctx.fillText('Cornhole', cx, H * 0.09)
+  ctx.fillStyle = '#00E5FF'
+  ctx.font = `bold ${Math.round(W * 0.12)}px system-ui,sans-serif`
+  ctx.fillText('BAGMEN', cx, H * 0.08)
+  ctx.restore()
 
   // ── Sack-Design ──
   const desY = H * 0.16
-  ctx.fillStyle = 'rgba(255,255,255,0.55)'
-  ctx.font = `${Math.round(W * 0.042)}px system-ui,sans-serif`
+  ctx.fillStyle = '#00E5FF'
+  ctx.font = `bold ${Math.round(W * 0.036)}px system-ui,sans-serif`
   ctx.textAlign = 'left'
-  ctx.fillText('Dein Sack-Design', secX, desY)
+  ctx.fillText('DEIN SACK-DESIGN', secX, desY)
 
   // Color swatches: 2 rows × 4
   const swR   = Math.min(Math.round(secW / 10), 18)
@@ -1722,7 +1816,7 @@ function drawSetupOverlay(
   const prevY  = ptY + ptBH + Math.round(H * 0.024)
   const prevFs = Math.round(W * 0.034)
   ctx.font = `${prevFs}px system-ui,sans-serif`
-  ctx.fillStyle = 'rgba(255,255,255,0.38)'; ctx.textAlign = 'left'
+  ctx.fillStyle = 'rgba(0,229,255,0.55)'; ctx.textAlign = 'left'
   ctx.fillText('Vorschau:', secX, prevY + swR)
 
   const prevBagX0 = secX + Math.round(secW * 0.34)
@@ -1753,15 +1847,18 @@ function drawSetupOverlay(
 
   // ── Separator ──
   const sepY = prevY + swR * 2 + Math.round(H * 0.022)
-  ctx.strokeStyle = 'rgba(255,255,255,0.14)'; ctx.lineWidth = 1
+  ctx.save()
+  ctx.strokeStyle = 'rgba(0,229,255,0.18)'; ctx.lineWidth = 1
+  ctx.shadowBlur = 4; ctx.shadowColor = 'rgba(0,229,255,0.30)'
   ctx.beginPath(); ctx.moveTo(secX, sepY); ctx.lineTo(secX + secW, sepY); ctx.stroke()
+  ctx.restore()
 
   // ── Gegner wählen ──
   const aiLabelY = sepY + Math.round(H * 0.028)
-  ctx.fillStyle = 'rgba(255,255,255,0.55)'
-  ctx.font = `${Math.round(W * 0.042)}px system-ui,sans-serif`
+  ctx.fillStyle = '#00E5FF'
+  ctx.font = `bold ${Math.round(W * 0.036)}px system-ui,sans-serif`
   ctx.textAlign = 'left'
-  ctx.fillText('Gegner wählen', secX, aiLabelY)
+  ctx.fillText('GEGNER WÄHLEN', secX, aiLabelY)
 
   const styles: AiStyle[] = ['blocker', 'airmailer', 'nervenbundel']
   const bh  = Math.round(H * 0.080)
@@ -1770,10 +1867,13 @@ function drawSetupOverlay(
     const style = styles[i]
     const by    = aiLabelY + Math.round(H * 0.040) + i * (bh + gap)
 
-    ctx.fillStyle = 'rgba(255,255,255,0.08)'
+    ctx.fillStyle = 'rgba(0,229,255,0.05)'
     ctx.beginPath(); ctx.roundRect(secX, by, secW, bh, 10); ctx.fill()
-    ctx.strokeStyle = 'rgba(255,255,255,0.20)'; ctx.lineWidth = 1.5
+    ctx.save()
+    ctx.shadowBlur = 6; ctx.shadowColor = 'rgba(0,229,255,0.30)'
+    ctx.strokeStyle = 'rgba(0,229,255,0.30)'; ctx.lineWidth = 1.5
     ctx.beginPath(); ctx.roundRect(secX, by, secW, bh, 10); ctx.stroke()
+    ctx.restore()
 
     ctx.fillStyle = '#fff'
     ctx.font = `bold ${Math.round(bh * 0.32)}px system-ui,sans-serif`
@@ -1790,9 +1890,9 @@ function drawSetupOverlay(
   // Tutorial-wiederholen link
   const tBtnH = Math.round(H * 0.046)
   const tBtnY = aiLabelY + Math.round(H * 0.040) + styles.length * (bh + gap) + Math.round(H * 0.018)
-  ctx.fillStyle = 'rgba(255,255,255,0.12)'
+  ctx.fillStyle = 'rgba(0,229,255,0.07)'
   ctx.beginPath(); ctx.roundRect(secX, tBtnY, secW, tBtnH, 6); ctx.fill()
-  ctx.strokeStyle = 'rgba(255,255,255,0.18)'; ctx.lineWidth = 1
+  ctx.strokeStyle = 'rgba(0,229,255,0.25)'; ctx.lineWidth = 1
   ctx.beginPath(); ctx.roundRect(secX, tBtnY, secW, tBtnH, 6); ctx.stroke()
   ctx.fillStyle = 'rgba(255,255,255,0.45)'
   ctx.font = `${Math.round(tBtnH * 0.44)}px system-ui,sans-serif`
