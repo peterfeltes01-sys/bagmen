@@ -312,7 +312,15 @@ function bagRestCenter(lt: Layout): { x: number; y: number } {
   return { x: lt.cssW / 2, y: lt.throwZoneY + zh * BAG_Y_FRAC }
 }
 
-function computeIdealPower(by: number): number {
+function computeIdealPower(by: number, flightType: FlightType, physics: PhysicsConfig): number {
+  if (flightType === 'roll') {
+    // Quadratic solve: landing + slide = aim.by
+    // (MIN_LAND_Y + p·range) + p²·(slideVRoll²/2·pushFriction) = by
+    const a = physics.slideVRoll * physics.slideVRoll / (2 * physics.pushFriction)
+    const r = MAX_LAND_Y - MIN_LAND_Y
+    const p = (-r + Math.sqrt(r * r + 4 * a * (-MIN_LAND_Y + by))) / (2 * a)
+    return Math.max(0, Math.min(1, p))
+  }
   return Math.max(0, Math.min(1, (by - MIN_LAND_Y) / (MAX_LAND_Y - MIN_LAND_Y)))
 }
 
@@ -335,7 +343,7 @@ function computeThrowInput(g: GameData): ThrowInput | null {
   const targetX = Math.max(-BOARD.halfWidth, Math.min(BOARD.halfWidth, aim.bx + corrCm))
   const targetY = MIN_LAND_Y + power * (MAX_LAND_Y - MIN_LAND_Y)
 
-  const idealP    = computeIdealPower(aim.by)
+  const idealP    = computeIdealPower(aim.by, flightType, g.physicsConfig)
   const inZone    = Math.abs(power - idealP) <= g.idealZoneWidth
   const baseFocus = Math.max(0.3, 0.85 - Math.abs(corrCm) / 15 * 0.55)
   const focus     = inZone ? Math.min(1.0, baseFocus + 0.12) : baseFocus
@@ -378,9 +386,9 @@ function autoAim(
     return { bx: BOARD.holeX, by: BOARD.holeY }
   }
   if (flightType === 'roll') {
-    // Push: aim 10 cm before the bag deepest on the board
+    // Push: crosshair ON the target bag; ideal power compensates for slide
     const bags = [...boardState.bags].sort((a, b) => b.y - a.y)
-    if (bags.length > 0) return { bx: bags[0].x, by: Math.max(10, bags[0].y - 10) }
+    if (bags.length > 0) return { bx: bags[0].x, by: bags[0].y }
     return { bx: BOARD.holeX, by: BOARD.holeY }
   }
   // Block (flat): blocker zone in front of hole
@@ -905,8 +913,29 @@ function drawSlidePreview(
   flightType: FlightType, physics: PhysicsConfig, lt: Layout,
   boardState?: BoardState,
 ) {
-  const idealP = computeIdealPower(aim.by)
-  const baseV  = { flat: physics.slideVFlat, roll: physics.slideVRoll, airmail: physics.slideVAirmail }[flightType]
+  const idealP = computeIdealPower(aim.by, flightType, physics)
+
+  if (flightType === 'roll') {
+    // Dashed line from predicted landing point to the target bag, plus push arrow
+    const landY  = MIN_LAND_Y + idealP * (MAX_LAND_Y - MIN_LAND_Y)
+    const startP = bagPos(aim.bx, landY, lt)
+    const endP   = bagPos(aim.bx, aim.by, lt)
+    ctx.save()
+    ctx.beginPath(); ctx.moveTo(startP.x, startP.y); ctx.lineTo(endP.x, endP.y)
+    ctx.strokeStyle = 'rgba(255,140,30,0.65)'; ctx.lineWidth = 2; ctx.setLineDash([4, 4])
+    ctx.stroke(); ctx.setLineDash([])
+    const ah = 8, aw = 5
+    ctx.strokeStyle = 'rgba(255,140,30,0.90)'; ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.lineJoin = 'round'
+    ctx.beginPath()
+    ctx.moveTo(endP.x - aw, endP.y + ah)
+    ctx.lineTo(endP.x, endP.y - ah * 0.5)
+    ctx.lineTo(endP.x + aw, endP.y + ah)
+    ctx.stroke()
+    ctx.restore()
+    return
+  }
+
+  const baseV  = { flat: physics.slideVFlat, airmail: physics.slideVAirmail, roll: physics.slideVRoll }[flightType]
   const v0     = idealP * baseV
   const dist   = (v0 * v0) / (2 * physics.pushFriction)
   if (dist < 1) return
@@ -914,7 +943,7 @@ function drawSlidePreview(
   const p0   = bagPos(aim.bx, aim.by, lt)
   const p1   = bagPos(aim.bx, endY, lt)
 
-  const bagD       = BOARD.bagDiameter
+  const bagD        = BOARD.bagDiameter
   const collidingBag = boardState?.bags.find(b => {
     if (b.y <= aim.by + 2)       return false
     if (b.y > endY + bagD * 0.5) return false
@@ -1188,7 +1217,7 @@ function drawThrowZone(ctx: CanvasRenderingContext2D, g: GameData, lt: Layout, t
       ctx.fillStyle = color
       ctx.beginPath(); ctx.roundRect(barX, barY0 + barH - fillH, barW, fillH, 3); ctx.fill()
     }
-    const ip      = computeIdealPower(g.aim.by)
+    const ip      = computeIdealPower(g.aim.by, g.flightType, g.physicsConfig)
     const markerY = barY0 + barH * (1 - ip)
     const zoneH   = barH * g.idealZoneWidth * 2
     ctx.fillStyle = 'rgba(252,211,77,0.22)'

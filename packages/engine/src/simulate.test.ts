@@ -88,7 +88,35 @@ describe('simulateThrow', () => {
     expect(pushCount).toBeGreaterThanOrEqual(10)
   })
 
-  // ── 4. No bag outside plausible bounds ────────────────────────────────────
+  // ── 4. Push moves a bag 20 cm from the hole ──────────────────────────────
+
+  it('push aimed 15 cm short drives a bag that sits 20 cm from the hole', () => {
+    const TARGET_Y = BOARD.holeY - 20  // 77 cm from front edge
+    const board: BoardState = {
+      bags: [{ id: 'target', teamId: 0, x: 0, y: TARGET_Y, side: 'fast' }],
+    }
+    // Aim 15 cm in front of the target bag so the thrown bag always slides into it.
+    // power=0.8 → slide ≈ 23 cm; bag reaches target even from 15 cm out.
+    const pushShot = goodShot({
+      targetX:    0,
+      targetY:    TARGET_Y - 15,
+      power:      0.8,
+      spin:       0.5,
+      flightType: 'roll',
+      skillLevel: 0.95,
+      focus:      0.95,
+    })
+
+    let pushCount = 0
+    for (let seed = 0; seed < 20; seed++) {
+      const { result } = simulateThrow(board, pushShot, createRng(seed))
+      const pushed = result.pushedBags.find(b => b.id === 'target')
+      if (pushed && pushed.finalY > TARGET_Y + 2) pushCount++
+    }
+    expect(pushCount).toBeGreaterThanOrEqual(10)
+  })
+
+  // ── 5. No bag outside plausible bounds ────────────────────────────────────
 
   it('no bag lands outside plausible board area (no NaN / no explosion)', () => {
     const MARGIN = 3 * BOARD.length  // generous 3× board length
