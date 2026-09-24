@@ -1446,6 +1446,7 @@ function drawOutcomeLabel(ctx: CanvasRenderingContext2D, s: LastThrowSummary, lt
   ctx.shadowBlur = 16; ctx.shadowColor = color
   ctx.fillStyle = color; ctx.fillText(label, cx, cy)
   ctx.restore()
+  ctx.restore()
 }
 
 function drawFrameSummaryOverlay(
@@ -2052,8 +2053,7 @@ function render(ctx: CanvasRenderingContext2D, g: GameData, ts: number, bagDefor
 
   ctx.restore()
 
-  // Diagnostic overlay — always visible during gameplay
-  if (g.uiPhase === 'playing' || g.uiPhase === 'tutorial' || g.uiPhase === 'frameSummary') {
+  if (g.debugMode && (g.uiPhase === 'playing' || g.uiPhase === 'tutorial' || g.uiPhase === 'frameSummary')) {
     ctx.save()
     ctx.font = '11px monospace'
     ctx.textAlign = 'right'
@@ -2686,9 +2686,6 @@ export function GameCanvas() {
 
       update(g, ts)
 
-      if (prevPhase !== g.phase) {
-        console.log(`[PHASE] ${prevPhase} → ${g.phase}  camZoom: ${prevZoom.toFixed(4)} → ${g.camZoom.toFixed(4)}`)
-      }
 
       if (prevPhase === 'flying' && g.phase === 'sliding' && g.pending) {
         const r   = g.pending.result
