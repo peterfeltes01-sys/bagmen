@@ -309,6 +309,70 @@ describe('simulateThrow', () => {
     }
   })
 
+  // ── 11. AABB SAT: frontaler Treffer → Schubrichtung < 10° von Wurfachse ───
+
+  it('frontal hits at 0, 4, 6 cm lateral offset push blocker in throw direction (angle < 10°)', () => {
+    // Zero-scatter RNG: u1=1.0 in Box-Muller → gx=gy=0, bag lands exactly at target.
+    function zeroScatterRng() {
+      const vals = [0.5, 1.0, 0.5]
+      let i = 0
+      return () => (i < vals.length ? vals[i++] : 0)
+    }
+    // pushFriction=0 so the blocker slides freely — we only care about direction, not distance.
+    const dirPhysics: PhysicsConfig = { ...PHYSICS_DEFAULTS, slideVFlat: 200, pushFriction: 0 }
+    const BLOCKER_Y = 50
+
+    for (const landX of [0, 4, 6]) {
+      const board: BoardState = {
+        bags: [{ id: 'blocker', teamId: 1, x: 0, y: BLOCKER_Y, side: 'slow' }],
+      }
+      const { result } = simulateThrow(
+        board,
+        goodShot({ targetX: landX, targetY: 30, power: 1.0, spin: 0, flightType: 'flat', skillLevel: 1.0, focus: 1.0 }),
+        zeroScatterRng(),
+        dirPhysics,
+      )
+      const pushed = result.pushedBags.find(b => b.id === 'blocker')
+      expect(pushed).toBeDefined()
+      const dx = pushed!.finalX - 0   // blocker started at x=0
+      const dy = pushed!.finalY - BLOCKER_Y
+      if (dy > 0.1) {
+        const angle = Math.atan2(Math.abs(dx), dy) * 180 / Math.PI
+        expect(angle).toBeLessThan(10)
+      }
+    }
+  })
+
+  // ── 12. AABB SAT: Eckentreffer bei 12 cm Versatz → deutlich schräge Richtung ─
+
+  it('corner hit at 12 cm lateral offset deflects blocker clearly sideways (angle > 30°)', () => {
+    function zeroScatterRng() {
+      const vals = [0.5, 1.0, 0.5]
+      let i = 0
+      return () => (i < vals.length ? vals[i++] : 0)
+    }
+    const dirPhysics: PhysicsConfig = { ...PHYSICS_DEFAULTS, slideVFlat: 200, pushFriction: 0 }
+    const BLOCKER_Y = 50
+    const board: BoardState = {
+      bags: [{ id: 'blocker', teamId: 1, x: 0, y: BLOCKER_Y, side: 'slow' }],
+    }
+    const { result } = simulateThrow(
+      board,
+      goodShot({ targetX: 12, targetY: 30, power: 1.0, spin: 0, flightType: 'flat', skillLevel: 1.0, focus: 1.0 }),
+      zeroScatterRng(),
+      dirPhysics,
+    )
+    const pushed = result.pushedBags.find(b => b.id === 'blocker')
+    expect(pushed).toBeDefined()
+    const dx = pushed!.finalX - 0
+    const dy = pushed!.finalY - BLOCKER_Y
+    const moved = Math.sqrt(dx * dx + dy * dy)
+    if (moved > 0.5) {
+      const angle = Math.atan2(Math.abs(dx), Math.abs(dy) + 0.001) * 180 / Math.PI
+      expect(angle).toBeGreaterThan(30)
+    }
+  })
+
   // ── 10. No bag outside plausible bounds ───────────────────────────────────
 
   it('no bag lands outside plausible board area (no NaN / no explosion)', () => {

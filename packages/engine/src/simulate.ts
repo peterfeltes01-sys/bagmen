@@ -142,25 +142,37 @@ function runSlide(
         }
       }
 
-      // Normal vector from contact point toward the static bag's centre.
-      const ex = bag.x - cx
-      const ey = bag.y - cy
-      const ed = Math.sqrt(ex * ex + ey * ey)
+      // AABB SAT: determine contact type from remaining overlap on each axis.
+      // Face contact (Y overlap < X overlap): normal is the face normal (Y direction).
+      //   → frontal hits with small lateral offset push the blocker straight forward.
+      // Corner contact (X overlap < Y overlap): fall back to centre-to-centre normal.
+      //   → preserves the angled deflection physics for glancing hits.
+      const dx = bag.x - cx   // vector from mover centre to static centre
+      const dy = bag.y - cy
+      const overlapX = BOARD.bagDiameter - Math.abs(dx)
+      const overlapY = BOARD.bagDiameter - Math.abs(dy)
 
       let nx: number, ny: number
-      if (ed < 0.001) {
-        // Centers coincide — use anti-velocity as separating normal.
-        const spd3 = Math.sqrt(vxPost * vxPost + vyPost * vyPost)
-        if (spd3 < 0.001) {
-          // Mover is also stationary: nothing to resolve, advance normally.
-          m.x = nx_; m.y = ny_; m.vx = vxPost; m.vy = vyPost
-          continue
+      if (overlapX <= 0 || overlapY <= 0) {
+        // No real AABB overlap after CCD — fall back to centre-to-centre.
+        const ed = Math.sqrt(dx * dx + dy * dy)
+        if (ed < 0.001) {
+          const spd3 = Math.sqrt(vxPost * vxPost + vyPost * vyPost)
+          if (spd3 < 0.001) {
+            m.x = nx_; m.y = ny_; m.vx = vxPost; m.vy = vyPost
+            continue
+          }
+          nx = vxPost / spd3; ny = vyPost / spd3
+        } else {
+          nx = dx / ed; ny = dy / ed
         }
-        nx = vxPost / spd3
-        ny = vyPost / spd3
+      } else if (overlapY <= overlapX) {
+        // Face contact: Y axis has less overlap → face normal in Y direction.
+        nx = 0; ny = Math.sign(dy)
       } else {
-        nx = ex / ed
-        ny = ey / ed
+        // Corner contact: centre-to-centre normal preserves push direction and magnitude.
+        const ed = Math.sqrt(dx * dx + dy * dy)
+        nx = dx / ed; ny = dy / ed
       }
       const dot = vxPost * nx + vyPost * ny
 
