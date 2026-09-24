@@ -4,7 +4,7 @@
  *
  * Nur messen — Engine-Code und config.ts bleiben unveraendert.
  *
- * Sweep: slideVFlat × slideVRoll × pushFriction (4×4×4 = 64 Kombos)
+ * Sweep: pushedFriction × collisionTransfer (6×6 = 36 Kombos)
  * Szenarien je Kombo:
  *   slide-scat   : flat, kein Blocker, Streuung guter Spieler
  *   push25-no    : roll (weich), Blocker 25 cm vor Loch, sigma=0 (deterministisch)
@@ -18,16 +18,21 @@ import { BOARD, PHYSICS_DEFAULTS, SCATTER, SLIDE } from '../src/config.js'
 import type { BagOnBoard, SackOutcome }             from '../src/types.js'
 
 // ── Sweep-Gitter ──────────────────────────────────────────────────────────────
-const VFLAT_GRID    = [80, 120, 180, 250] as const   // slideVFlat  cm/s
-const VROLL_GRID    = [80, 120, 180, 250] as const   // slideVRoll  cm/s
-const FRICTION_GRID = [250, 320, 390, 450] as const  // pushFriction cm/s²
+const PUSHED_FRIC_GRID  = [50, 100, 150, 200, 250, 300] as const  // pushedFriction cm/s²
+const COL_TRANSFER_GRID = [0.5, 0.6, 0.7, 0.8, 0.9, 1.0] as const // collisionTransfer ≤ 1.0
 
 const N_THROWS  = 200   // Würfe pro Scatter-Szenario
 const THROW_PWR = 0.8   // Standard-Wurfstärke
 
 // ── Typen ─────────────────────────────────────────────────────────────────────
 
-interface Po { slideVFlat: number; slideVRoll: number; pushFriction: number }
+interface Po {
+  slideVFlat:        number
+  slideVRoll:        number
+  pushFriction:      number
+  pushedFriction:    number
+  collisionTransfer: number
+}
 interface Mv { id: string; x: number; y: number; vx: number; vy: number; friction: number }
 interface Gp { tx: number; ty: number; pw: number }
 
@@ -39,31 +44,33 @@ interface SimResult {
 }
 
 interface RunStats {
-  inRate:      number
-  offRate:     number
-  onRate:      number
-  contactRate: number
-  avgPushDy:   number
+  inRate:          number
+  offRate:         number
+  onRate:          number
+  contactRate:     number
+  medianPushDy:    number
+  p90PushDy:       number
+  finalYMax:       number
+  inGivenContact:  number
+  offGivenContact: number
 }
 
 interface ComboResult {
-  vFlat:       number
-  vRoll:       number
-  friction:    number
+  pushedFric:  number
+  colTransfer: number
   slideFlat:   number      // analytische Rutschweite, flat, power=0.8 (cm)
-  slideScat:   RunStats    // slide-Szenario mit Streuung
+  slideScat:   RunStats
   push25Gp:    Gp
   push25No:    SimResult   // deterministisch (sigma=0)
   push25Scat:  RunStats
   push35Gp:    Gp
   push35No:    SimResult
   push35Scat:  RunStats
-  score:       number      // max 13
+  score:       number      // max 11
 }
 
 // ── Slide-Simulation ──────────────────────────────────────────────────────────
 // Vereinfachte Version der Engine-Logik (keine CCD), fuer Messzwecke.
-// pushedFriction und collisionTransfer kommen aus PHYSICS_DEFAULTS.
 
 function runSlide(
   thrown:  Mv,
@@ -73,8 +80,8 @@ function runSlide(
   const movers: Mv[] = [{ ...thrown }]
   const stat   = new Map(statics.map(b => [b.id, { x: b.x, y: b.y }]))
   const R2     = BOARD.bagDiameter * BOARD.bagDiameter
-  const pf     = PHYSICS_DEFAULTS.pushedFriction
-  const ct     = PHYSICS_DEFAULTS.collisionTransfer
+  const pf     = po.pushedFriction
+  const ct     = po.collisionTransfer
 
   for (let step = 0; step < SLIDE.maxSteps; step++) {
     // Reibung + Bewegung
@@ -97,14 +104,18 @@ function runSlide(
         if (dx * dx + dy * dy >= R2) continue
         const d = Math.sqrt(dx * dx + dy * dy)
         if (d < 0.001) { stat.delete(sid); break }
-        const nx = dx / d, ny = dy / d
+        // AABB SAT: spiegelt simulate.ts
+        const oX = BOARD.bagDiameter - Math.abs(dx)
+        const oY = BOARD.bagDiameter - Math.abs(dy)
+        let nx: number, ny: number
+        if (oX <= 0 || oY <= 0) { nx = dx / d; ny = dy / d }
+        else if (oY <= oX)       { nx = 0; ny = Math.sign(dy) }
+        else                     { nx = dx / d; ny = dy / d }
         const dot = m.vx * nx + m.vy * ny
         if (dot > 0) {
-          // Normale Kollision
           spawned.push({ id: sid, x: sp.x, y: sp.y, vx: dot*nx*ct, vy: dot*ny*ct, friction: pf })
           m.vx -= dot * nx; m.vy -= dot * ny
         } else if (m.y > sp.y && m.vy > 0) {
-          // Overshoot-Branch
           const dr = -dot
           spawned.push({ id: sid, x: sp.x, y: sp.y, vx: -dr*nx*ct, vy: -dr*ny*ct, friction: pf })
           m.vx += dr * nx; m.vy += dr * ny
@@ -148,6 +159,14 @@ function avgArr(a: number[]): number {
   return a.length ? a.reduce((s, v) => s + v, 0) / a.length : 0
 }
 
+function pct(arr: number[], q: number): number {
+  if (!arr.length) return 0
+  const s = [...arr].sort((a, b) => a - b)
+  const i = (q / 100) * (s.length - 1)
+  const lo = Math.floor(i)
+  return s[lo] + (s[Math.ceil(i)] - s[lo]) * (i - lo)
+}
+
 // ── Einzelwurf ───────────────────────────────────────────────────────────────
 
 function sim(
@@ -187,7 +206,7 @@ function gridSearch(blocker: BagOnBoard, fl: 'flat' | 'roll', po: Po): Gp {
   const tyRange = fl === 'roll'
     ? numRange(bY - 60, bY - 40, 5)
     : numRange(bY - 15, bY - 5,  2)
-  const txRange = numRange(bX - 10, bX + 10, 5)
+  const txRange = [bX]   // Zielpunkt immer auf Blocker-Mitte
   const pwRange = numRange(0.3, 1.0, 0.1)
 
   let best: Gp = { tx: bX, ty: bY - 20, pw: 0.6 }
@@ -213,7 +232,9 @@ function scatterRun(
   po:     Po,
 ): RunStats {
   let inn = 0, off = 0, on = 0, contact = 0
-  const dyArr: number[] = []
+  let innC = 0, offC = 0
+  const dyArr:     number[] = []
+  const finalYArr: number[] = []
 
   for (let seed = 0; seed < N_THROWS; seed++) {
     const rng       = createRng(seed)
@@ -227,14 +248,24 @@ function scatterRun(
     else if (out === 'on')  on++
     else if (out === 'off') off++
 
-    if (r.contacted) { contact++; dyArr.push(r.pushedDy) }
+    if (r.contacted) {
+      contact++
+      dyArr.push(r.pushedDy)
+      finalYArr.push(statics[0].y + r.pushedDy)
+      if (r.pushedOutcome === 'in')  innC++
+      if (r.pushedOutcome === 'off') offC++
+    }
   }
   return {
-    inRate:      inn     / N_THROWS,
-    offRate:     off     / N_THROWS,
-    onRate:      on      / N_THROWS,
-    contactRate: contact / N_THROWS,
-    avgPushDy:   avgArr(dyArr),
+    inRate:          inn     / N_THROWS,
+    offRate:         off     / N_THROWS,
+    onRate:          on      / N_THROWS,
+    contactRate:     contact / N_THROWS,
+    medianPushDy:    pct(dyArr, 50),
+    p90PushDy:       pct(dyArr, 90),
+    finalYMax:       finalYArr.length ? Math.max(...finalYArr) : (statics[0]?.y ?? 0),
+    inGivenContact:  contact > 0 ? innC / contact : 0,
+    offGivenContact: contact > 0 ? offC / contact : 0,
   }
 }
 
@@ -243,15 +274,22 @@ function scatterRun(
 const BLOCKER25: BagOnBoard = { id: 'B25', teamId: 1, x: 0, y: BOARD.holeY - 25, side: 'slow' }
 const BLOCKER35: BagOnBoard = { id: 'B35', teamId: 1, x: 0, y: BOARD.holeY - 35, side: 'slow' }
 
-function runCombo(po: Po): ComboResult {
+function runCombo(pushedFric: number, colTransfer: number): ComboResult {
+  const po: Po = {
+    slideVFlat:        PHYSICS_DEFAULTS.slideVFlat,
+    slideVRoll:        PHYSICS_DEFAULTS.slideVRoll,
+    pushFriction:      PHYSICS_DEFAULTS.pushFriction,
+    pushedFriction:    pushedFric,
+    collisionTransfer: colTransfer,
+  }
   const sig = throwSigma()
 
-  // Analytische Rutschweite flat, power=0.8 (kein Blocker, kein Streuung)
+  // Analytische Rutschweite flat, power=0.8 (kein Blocker, keine Streuung)
   const slideFlat = (THROW_PWR * po.slideVFlat) ** 2 / (2 * po.pushFriction)
 
   // slide-scat: Ziel = Loch, flat, Streuung
-  const slideGp: Gp  = { tx: BOARD.holeX, ty: BOARD.holeY, pw: THROW_PWR }
-  const slideScat    = scatterRun([], slideGp, 'flat', sig, po)
+  const slideGp: Gp = { tx: BOARD.holeX, ty: BOARD.holeY, pw: THROW_PWR }
+  const slideScat   = scatterRun([], slideGp, 'flat', sig, po)
 
   // push25: roll (weich), Blocker 25 cm vor Loch
   const push25Gp   = gridSearch(BLOCKER25, 'roll', po)
@@ -264,7 +302,7 @@ function runCombo(po: Po): ComboResult {
   const push35Scat = scatterRun([BLOCKER35], push35Gp, 'flat', sig, po)
 
   const base = {
-    vFlat: po.slideVFlat, vRoll: po.slideVRoll, friction: po.pushFriction,
+    pushedFric, colTransfer,
     slideFlat, slideScat,
     push25Gp, push25No, push25Scat,
     push35Gp, push35No, push35Scat,
@@ -273,87 +311,106 @@ function runCombo(po: Po): ComboResult {
 }
 
 // ── Scoring ───────────────────────────────────────────────────────────────────
-// Max 13 Punkte
+// Max 11 Punkte
 
 function calcScore(r: ComboResult): number {
   let s = 0
-  // slide-scat In-Rate 30–50 %
-  if (r.slideScat.inRate  >= 0.30 && r.slideScat.inRate  <= 0.50) s += 2
-  // Rutschweite 30–60 cm
-  if (r.slideFlat          >= 30   && r.slideFlat          <= 60)   s += 1
-  // push25 ohne Streuung: Blocker landet im Loch
-  if (r.push25No.pushedOutcome === 'in')                            s += 2
-  // push25 mit Streuung: In-Rate 20–40 %
-  if (r.push25Scat.inRate >= 0.20 && r.push25Scat.inRate  <= 0.40) s += 2
-  // push35 ohne Streuung
-  if (r.push35No.pushedOutcome === 'in')                            s += 2
-  // push35 mit Streuung: In-Rate 15–35 %
-  if (r.push35Scat.inRate >= 0.15 && r.push35Scat.inRate  <= 0.35) s += 2
-  // push35 mit Streuung: Off-Rate 10–25 %
-  if (r.push35Scat.offRate >= 0.10 && r.push35Scat.offRate <= 0.25) s += 1
-  // weich schiebt seltener vom Brett als fest
-  if (r.push25Scat.offRate < r.push35Scat.offRate)                  s += 1
+  // Median Schubweg 20–50 cm (Mittel push25 + push35)
+  const medMid = (r.push25Scat.medianPushDy + r.push35Scat.medianPushDy) / 2
+  if (medMid >= 20 && medMid <= 50) s += 2
+  // Off@Kontakt <= 10% für beide Szenarien
+  if (r.push25Scat.offGivenContact <= 0.10 && r.push35Scat.offGivenContact <= 0.10) s += 2
+  // In@Kontakt push25 20–40 %
+  if (r.push25Scat.inGivenContact >= 0.20 && r.push25Scat.inGivenContact <= 0.40) s += 2
+  // In@Kontakt push35 20–40 %
+  if (r.push35Scat.inGivenContact >= 0.20 && r.push35Scat.inGivenContact <= 0.40) s += 2
+  // p90 Schubweg < 80 cm (Blocker bleibt auf Brett)
+  if (Math.max(r.push25Scat.p90PushDy, r.push35Scat.p90PushDy) < 80) s += 1
+  // deterministisch: Blocker ins Loch
+  if (r.push25No.pushedOutcome === 'in') s += 1
+  if (r.push35No.pushedOutcome === 'in') s += 1
   return s
 }
 
 // ── Ausgabe ───────────────────────────────────────────────────────────────────
 
-const p  = (r: number)             => (r * 100).toFixed(1) + '%'
-const f  = (n: number, d = 1)      => n.toFixed(d)
-const yn = (b: boolean)            => b ? '✓' : '✗'
+const p  = (r: number)        => (r * 100).toFixed(1) + '%'
+const f  = (n: number, d = 1) => n.toFixed(d)
+const yn = (b: boolean)       => b ? '✓' : '✗'
 
 function printTable(results: ComboResult[]): void {
   const top = [...results].sort((a, b) => b.score - a.score).slice(0, 5)
 
-  const SEP = '─'.repeat(116)
-  console.log('\n' + '='.repeat(116))
-  console.log('TOP 5 KOMBINATIONEN  (Zielwerte: slide 30–50 %; slide_cm 30–60; push25-no ✓ >60%; push25-scat 20–40%; push35-no ✓ >50%; push35-scat 15–35%; push35-off 10–25%)')
-  console.log('='.repeat(116))
+  const W   = 150
+  const SEP = '─'.repeat(W)
+  console.log('\n' + '='.repeat(W))
+  console.log('TOP 5 KOMBINATIONEN  (Ziele: Median-Schubweg 20–50 cm · off@Kontakt ≤10% · in@Kontakt push25/35 20–40% · p90 <80 cm)')
+  console.log('='.repeat(W))
   console.log(
-    'Rk | vFlat | vRoll | Fric |  slide_cm | slide-scat | push25-no | push25-sc | push25-off | push35-no | push35-sc | push35-off | Pkt'
+    'Rk | pFric | cT  |' +
+    ' push25: med    p90  fYmax in@C  off@C no |' +
+    ' push35: med    p90  fYmax in@C  off@C no |' +
+    ' Pkt | Kriterien'
   )
   console.log(SEP)
 
   for (let i = 0; i < top.length; i++) {
-    const r = top[i]
+    const r   = top[i]
+    const p25 = r.push25Scat
+    const p35 = r.push35Scat
+    const medMid = (p25.medianPushDy + p35.medianPushDy) / 2
+    const critMed  = yn(medMid >= 20 && medMid <= 50)
+    const critOff  = yn(p25.offGivenContact <= 0.10 && p35.offGivenContact <= 0.10)
+    const critIn25 = yn(p25.inGivenContact >= 0.20 && p25.inGivenContact <= 0.40)
+    const critIn35 = yn(p35.inGivenContact >= 0.20 && p35.inGivenContact <= 0.40)
+    const critP90  = yn(Math.max(p25.p90PushDy, p35.p90PushDy) < 80)
     console.log(
       ` ${i + 1} |` +
-      `  ${String(r.vFlat).padStart(4)} |` +
-      `  ${String(r.vRoll).padStart(4)} |` +
-      ` ${String(r.friction).padStart(4)} |` +
-      ` ${f(r.slideFlat, 1).padStart(8)}cm |` +
-      `    ${p(r.slideScat.inRate).padStart(6)} |` +
-      `       ${yn(r.push25No.pushedOutcome === 'in')} |` +
-      `   ${p(r.push25Scat.inRate).padStart(6)} |` +
-      `     ${p(r.push25Scat.offRate).padStart(6)} |` +
-      `       ${yn(r.push35No.pushedOutcome === 'in')} |` +
-      `   ${p(r.push35Scat.inRate).padStart(6)} |` +
-      `     ${p(r.push35Scat.offRate).padStart(6)} |` +
-      `  ${r.score}`
+      `   ${String(r.pushedFric).padStart(3)} |` +
+      ` ${r.colTransfer.toFixed(1)} |` +
+      ` push25:` +
+      ` ${f(p25.medianPushDy).padStart(4)}cm` +
+      ` ${f(p25.p90PushDy).padStart(4)}cm` +
+      ` ${f(p25.finalYMax).padStart(5)}cm` +
+      ` ${p(p25.inGivenContact).padStart(6)}` +
+      ` ${p(p25.offGivenContact).padStart(5)}` +
+      ` ${yn(r.push25No.pushedOutcome === 'in')} |` +
+      ` push35:` +
+      ` ${f(p35.medianPushDy).padStart(4)}cm` +
+      ` ${f(p35.p90PushDy).padStart(4)}cm` +
+      ` ${f(p35.finalYMax).padStart(5)}cm` +
+      ` ${p(p35.inGivenContact).padStart(6)}` +
+      ` ${p(p35.offGivenContact).padStart(5)}` +
+      ` ${yn(r.push35No.pushedOutcome === 'in')} |` +
+      `  ${String(r.score).padStart(2)}/11 |` +
+      ` med${critMed} off${critOff} in25${critIn25} in35${critIn35} p90${critP90}`
     )
     console.log(
-      `   |       |       |      |` +
-      `  push25 best: tX=${f(r.push25Gp.tx)} tY=${f(r.push25Gp.ty)} pw=${f(r.push25Gp.pw, 2)}` +
-      `  |  push35 best: tX=${f(r.push35Gp.tx)} tY=${f(r.push35Gp.ty)} pw=${f(r.push35Gp.pw, 2)}`
+      `   |       |     |` +
+      `  push25 Gp: tX=${f(r.push25Gp.tx)} tY=${f(r.push25Gp.ty)} pw=${f(r.push25Gp.pw, 2)}` +
+      `  |  push35 Gp: tX=${f(r.push35Gp.tx)} tY=${f(r.push35Gp.ty)} pw=${f(r.push35Gp.pw, 2)}`
     )
   }
-  console.log('='.repeat(116))
+  console.log('='.repeat(W))
 }
 
 function printJson(results: ComboResult[]): void {
   const top = [...results].sort((a, b) => b.score - a.score).slice(0, 5)
   console.log('\n── JSON (Debug-Panel-Export) ──────────────────────────────────────────')
   const out = top.map((r, i) => ({
-    _rank:        i + 1,
-    _score:       r.score,
-    _slideCm:     +f(r.slideFlat),
-    _slideScatIn: p(r.slideScat.inRate),
-    _p25ScatIn:   p(r.push25Scat.inRate),
-    _p35ScatIn:   p(r.push35Scat.inRate),
+    _rank:             i + 1,
+    _score:            r.score,
+    _p25medDy:         +f(r.push25Scat.medianPushDy),
+    _p25p90Dy:         +f(r.push25Scat.p90PushDy),
+    _p25inC:           p(r.push25Scat.inGivenContact),
+    _p25offC:          p(r.push25Scat.offGivenContact),
+    _p35medDy:         +f(r.push35Scat.medianPushDy),
+    _p35p90Dy:         +f(r.push35Scat.p90PushDy),
+    _p35inC:           p(r.push35Scat.inGivenContact),
+    _p35offC:          p(r.push35Scat.offGivenContact),
     ...PHYSICS_DEFAULTS,
-    slideVFlat:   r.vFlat,
-    slideVRoll:   r.vRoll,
-    pushFriction: r.friction,
+    pushedFriction:    r.pushedFric,
+    collisionTransfer: r.colTransfer,
   }))
   console.log(JSON.stringify(out, null, 2))
 }
@@ -361,18 +418,21 @@ function printJson(results: ComboResult[]): void {
 // ── Instrumentierte Slide-Simulation für Detailanalyse ───────────────────────
 
 interface ContactCapture {
-  seed:          number
-  landX:         number
-  landY:         number
-  lateralOff:    number   // m.x − blocker.x am Kontaktpunkt (vx=0 → konstant = landX−blockerX)
-  thrownYContact: number  // y der geworfenen Tasche am Kontaktmoment
-  dot:           number   // Geschwindigkeit in Normalrichtung (Schubkomponente)
-  pushAngleDeg:  number   // Winkel Schubrichtung von "geradeaus" in °  (0=vorwärts, 90=seitlich)
-  initPushSpd:   number   // Anfangsschubgeschwindigkeit des Blockers (cm/s)
-  finalPushedX:  number
-  finalPushedY:  number
-  pushedDy:      number   // Δy des Blockers (cm)
-  outcome:       SackOutcome
+  seed:           number
+  landX:          number
+  landY:          number
+  lateralOff:     number   // m.x − blocker.x am Kontaktpunkt
+  thrownYContact: number   // y der geworfenen Tasche am Kontaktmoment
+  dot:            number   // Geschwindigkeit in Normalrichtung (Schubkomponente)
+  pushAngleDeg:   number   // Winkel Schubrichtung von "geradeaus" in °  (0=vorwärts, 90=seitlich)
+  initPushSpd:    number   // Anfangsschubgeschwindigkeit des Blockers (cm/s)
+  finalPushedX:   number
+  finalPushedY:   number
+  pushedDy:       number   // Δy des Blockers (cm)
+  outcome:        SackOutcome
+  overlapX:       number   // bagDiameter − |lateralOff| beim Erkennen
+  overlapY:       number   // bagDiameter − |dy| beim Erkennen
+  chosenAxis:     'Y' | 'CC'  // Y = Flächennormale, CC = Zentrum-zu-Zentrum
 }
 
 function runSlideCapture(
@@ -383,8 +443,8 @@ function runSlideCapture(
   const movers: Mv[] = [{ ...thrown }]
   const stat   = new Map([[blocker.id, { x: blocker.x, y: blocker.y }]])
   const R2     = BOARD.bagDiameter * BOARD.bagDiameter
-  const pf     = PHYSICS_DEFAULTS.pushedFriction
-  const ct     = PHYSICS_DEFAULTS.collisionTransfer
+  const pf     = po.pushedFriction
+  const ct     = po.collisionTransfer
   let cap: ContactCapture | null = null
 
   for (let step = 0; step < SLIDE.maxSteps; step++) {
@@ -405,26 +465,38 @@ function runSlideCapture(
         if (dx * dx + dy * dy >= R2) continue
         const d  = Math.sqrt(dx * dx + dy * dy)
         if (d < 0.001) { stat.delete(sid); break }
-        const nx = dx / d, ny = dy / d
+
+        // AABB SAT: spiegelt simulate.ts
+        const oX = BOARD.bagDiameter - Math.abs(dx)
+        const oY = BOARD.bagDiameter - Math.abs(dy)
+        let nx: number, ny: number, axis: 'Y' | 'CC'
+        if (oX <= 0 || oY <= 0) {
+          nx = dx / d; ny = dy / d; axis = 'CC'
+        } else if (oY <= oX) {
+          nx = 0; ny = Math.sign(dy); axis = 'Y'
+        } else {
+          nx = dx / d; ny = dy / d; axis = 'CC'
+        }
         const dot = m.vx * nx + m.vy * ny
 
         // Erstkontakt festhalten
         if (cap === null) {
-          // Winkel von "geradeaus" (y-Achse, Richtung Loch)
-          // |nx| = Seitenkomponente, ny = Vorwärtskomponente
-          const angleDeg = Math.atan2(Math.abs(nx), Math.abs(ny)) * 180 / Math.PI
+          const angleDeg = Math.atan2(Math.abs(nx), Math.abs(ny) || 1e-9) * 180 / Math.PI
           cap = {
-            seed: -1,
-            landX: thrown.x, landY: thrown.y,
-            lateralOff:    m.x - blocker.x,
+            seed:           -1,
+            landX:          thrown.x, landY: thrown.y,
+            lateralOff:     m.x - blocker.x,
             thrownYContact: m.y,
-            dot: Math.max(dot, -dot),   // Betrag, da beide Branches moeglich
-            pushAngleDeg:  angleDeg,
-            initPushSpd:   0,
-            finalPushedX:  blocker.x,
-            finalPushedY:  blocker.y,
-            pushedDy:      0,
-            outcome:       'on',
+            dot:            Math.max(dot, -dot),
+            pushAngleDeg:   angleDeg,
+            initPushSpd:    0,
+            finalPushedX:   blocker.x,
+            finalPushedY:   blocker.y,
+            pushedDy:       0,
+            outcome:        'on',
+            overlapX:       oX,
+            overlapY:       oY,
+            chosenAxis:     axis,
           }
         }
 
@@ -467,20 +539,20 @@ function detailedAnalysis(po: Po): void {
   const sig = throwSigma()
   console.log('\n' + '='.repeat(80))
   console.log('DETAILANALYSE  —  Beste Kombo')
-  console.log(`vFlat=${po.slideVFlat}  vRoll=${po.slideVRoll}  pushFriction=${po.pushFriction}  sigma=${f(sig)} cm`)
+  console.log(`pushedFriction=${po.pushedFriction}  collisionTransfer=${po.collisionTransfer}`)
+  console.log(`slideVFlat=${po.slideVFlat}  slideVRoll=${po.slideVRoll}  pushFriction=${po.pushFriction}  sigma=${f(sig)} cm`)
   console.log(`Board: Loch y=${BOARD.holeY} cm  Hinterkante y=${BOARD.length} cm  bagDiameter=${BOARD.bagDiameter} cm`)
   console.log('='.repeat(80))
 
   const scenarios: Array<{ label: string; blocker: BagOnBoard; fl: 'flat' | 'roll' }> = [
     { label: 'push25-scat  (roll / weich, Blocker 25 cm vor Loch)', blocker: BLOCKER25, fl: 'roll' },
-    { label: 'push35-scat  (flat / fest, Blocker 35 cm vor Loch)', blocker: BLOCKER35, fl: 'flat' },
+    { label: 'push35-scat  (flat / fest, Blocker 35 cm vor Loch)',  blocker: BLOCKER35, fl: 'flat' },
   ]
 
   for (const { label, blocker, fl } of scenarios) {
     const gp = gridSearch(blocker, fl, po)
 
-    // ── 200 Seeds mit Streuung, Kontakt instrumentiert ────────────────────
-    const captures: ContactCapture[]         = []
+    const captures: ContactCapture[] = []
     let total = 0, directIn = 0, directOff = 0
 
     for (let seed = 0; seed < N_THROWS; seed++) {
@@ -491,7 +563,6 @@ function detailedAnalysis(po: Po): void {
       const landX     = gp.tx + ox
       const landY     = gp.ty + oy
 
-      // Landung direkt im Loch oder ausserhalb Board → kein Kontakt moeglich
       if (ih(landX, landY))  { directIn++;  continue }
       if (!ob(landX, landY)) { directOff++; continue }
 
@@ -509,10 +580,9 @@ function detailedAnalysis(po: Po): void {
 
     console.log(`\n╔══ ${label}`)
     console.log(`║   Bester Zielpunkt: tX=${f(gp.tx)} tY=${f(gp.ty)} pw=${f(gp.pw, 2)}`)
-    console.log(`║   Blocker: y=${blocker.y} cm  Loch: y=${BOARD.holeY} cm  Abstand=${blocker.y - BOARD.holeY < 0 ? BOARD.holeY - blocker.y : blocker.y - BOARD.holeY} cm`)
+    console.log(`║   Blocker: y=${blocker.y} cm  Loch: y=${BOARD.holeY} cm`)
     console.log('╠══')
 
-    // 1. Kontaktrate
     console.log('║ 1) KONTAKT')
     console.log(`║    Gesamt Würfe    : ${total}`)
     console.log(`║    Direkt ins Loch : ${directIn}  (landen auf Loch, kein Rutsch nötig)`)
@@ -522,32 +592,37 @@ function detailedAnalysis(po: Po): void {
 
     if (nContact === 0) { console.log('╚══ kein Kontakt in allen Würfen'); continue }
 
-    // 2. Outcome bedingt auf Kontakt
     console.log('╠══')
     console.log('║ 2) OUTCOME  (bedingt auf Kontakt)')
     console.log(`║    in : ${String(inC).padStart(3)} / ${nContact} = ${p(inC / nContact)}`)
     console.log(`║    on : ${String(onC).padStart(3)} / ${nContact} = ${p(onC / nContact)}`)
     console.log(`║    off: ${String(offC).padStart(3)} / ${nContact} = ${p(offC / nContact)}`)
+    console.log('║')
+    console.log('║   Sweep-Tabelle vs. Detailanalyse:')
+    console.log(`║     ${p(inC / total).padStart(6)} = ${inC}/${total}  — alle Würfe  (Sweep-Tabelle)`)
+    console.log(`║     ${p(inC / nContact).padStart(6)} = ${inC}/${nContact}  — nur Kontaktwürfe  (Detailanalyse oben)`)
+    console.log(`║     Kontaktrate ${p(nContact / total)} × ${p(inC / nContact)} ≈ ${p(inC / total)}`)
 
-    // 3. Seitlicher Versatz & Schubrichtung
+    // 3. Schubweg & Kontaktpunkt
+    const pushDys   = captures.map(c => c.pushedDy)
+    const medDy     = pct(pushDys, 50)
+    const p90Dy     = pct(pushDys, 90)
+    const maxFinalY = Math.max(...captures.map(c => c.finalPushedY))
     const offsets   = captures.map(c => c.lateralOff)
     const angles    = captures.map(c => c.pushAngleDeg)
     const initVs    = captures.map(c => c.initPushSpd)
-    const pushDys   = captures.map(c => c.pushedDy)
 
     const meanOff   = avgArr(offsets)
     const stdOff    = Math.sqrt(avgArr(offsets.map(o => (o - meanOff) ** 2)))
     const meanAngle = avgArr(angles)
     const meanInitV = avgArr(initVs)
-    const meanPushDy = avgArr(pushDys)
-    const maxPushDy  = Math.max(...pushDys)
 
     console.log('╠══')
-    console.log('║ 3) SEITLICHER VERSATZ AM KONTAKTPUNKT & SCHUBRICHTUNG')
+    console.log('║ 3) SCHUBWEG & KONTAKTPUNKT')
+    console.log(`║    pushedDy    Median=${f(medDy)} cm  p90=${f(p90Dy)} cm  Max-finalY=${f(maxFinalY)} cm`)
     console.log(`║    lateralOff  MW=${f(meanOff, 1)} cm  σ=${f(stdOff, 1)} cm  (+ = Wurf rechts vom Blocker)`)
     console.log(`║    pushAngle   MW=${f(meanAngle, 1)}°  (0°=geradeaus → Loch, 90°=seitlich)`)
-    console.log(`║    initPushSpd MW=${f(meanInitV, 1)} cm/s  →  max Schubweg ${f(meanInitV**2/(2*PHYSICS_DEFAULTS.pushedFriction), 1)} cm`)
-    console.log(`║    pushedDy    MW=${f(meanPushDy, 1)} cm  MAX=${f(maxPushDy, 1)} cm`)
+    console.log(`║    initPushSpd MW=${f(meanInitV, 1)} cm/s  →  theor. max Schubweg ${f(meanInitV**2/(2*po.pushedFriction), 1)} cm`)
     console.log('║')
     console.log('║    |lateralOff| Verteilung                       In-Quote bei Kontakt')
 
@@ -573,11 +648,44 @@ function detailedAnalysis(po: Po): void {
       console.log(`║    ${tag.padEnd(8)}  ${bStr}  ${String(bucket.length).padStart(3)}  |  ${inStr}`)
     }
 
-    // 4. Off-Analyse
+    // 4. AABB-Achsenanalyse
     console.log('╠══')
-    console.log('║ 4) OFF-ANALYSE')
-    const backEdge = BOARD.length   // 120 cm
-    const maxFinalY = Math.max(...captures.map(c => c.finalPushedY))
+    console.log('║ 4) AABB-ACHSENANALYSE  nach |lateralOff|')
+    console.log('║')
+    console.log('║    Bucket     | Treffer | MW-Winkel | Y-Achse% | In-Rate')
+    console.log('║    ──────────────────────────────────────────────────────')
+    const axisBuckets: Array<[number, number, string]> = [
+      [0, 3, ' 0– 3'], [3, 6, ' 3– 6'], [6, 9, ' 6– 9'], [9, 12, ' 9–12'], [12, 15, '12–15'],
+    ]
+    for (const [lo, hi, lbl] of axisBuckets) {
+      const bucket  = captures.filter(c => Math.abs(c.lateralOff) >= lo && Math.abs(c.lateralOff) < hi)
+      if (bucket.length === 0) continue
+      const inB     = bucket.filter(c => c.outcome === 'in').length
+      const yAxis   = bucket.filter(c => c.chosenAxis === 'Y').length
+      const meanAng = avgArr(bucket.map(c => c.pushAngleDeg))
+      const yPct    = String(Math.round(yAxis / bucket.length * 100)).padStart(3)
+      const inPct   = (inB / bucket.length * 100).toFixed(1).padStart(5)
+      console.log(
+        `║    ${lbl} cm  |` +
+        `     ${String(bucket.length).padStart(3)} |` +
+        `    ${f(meanAng, 1).padStart(6)}° |` +
+        `     ${yPct}%  |` +
+        `  ${inPct}%`
+      )
+    }
+    console.log('║')
+    {
+      const meanOX = avgArr(captures.map(c => c.overlapX))
+      const meanOY = avgArr(captures.map(c => c.overlapY))
+      const yCount = captures.filter(c => c.chosenAxis === 'Y').length
+      console.log(`║    overlapX MW=${f(meanOX, 1)} cm  overlapY MW=${f(meanOY, 1)} cm  (bei Erkennung)`)
+      console.log(`║    Y-Achse: ${yCount}/${nContact} = ${p(yCount / nContact)}  CC-Achse: ${nContact - yCount}/${nContact} = ${p((nContact - yCount) / nContact)}`)
+    }
+
+    // 5. Off-Analyse
+    console.log('╠══')
+    console.log('║ 5) OFF-ANALYSE')
+    const backEdge      = BOARD.length
     const minDistToBack = backEdge - maxFinalY
     const holeNearMiss  = captures
       .filter(c => c.outcome === 'on')
@@ -610,23 +718,24 @@ function detailedAnalysis(po: Po): void {
 function main(): void {
   const sig = throwSigma()
   console.log('='.repeat(80))
-  console.log('PUSH-BENCH  —  Parameter-Sweep')
+  console.log('PUSH-BENCH  —  Sweep pushedFriction × collisionTransfer')
   console.log(`Loch: y=${BOARD.holeY} cm, r=${BOARD.holeRadius} cm  |  sigma=${f(sig)} cm  |  N=${N_THROWS}`)
-  console.log(`Sweep: vFlat=[${VFLAT_GRID.join(',')}]  vRoll=[${VROLL_GRID.join(',')}]  friction=[${FRICTION_GRID.join(',')}]`)
+  console.log(`pushedFriction  = [${PUSHED_FRIC_GRID.join(', ')}] cm/s²`)
+  console.log(`collisionTransfer = [${COL_TRANSFER_GRID.join(', ')}]`)
+  console.log(`Fixe Defaults: slideVFlat=${PHYSICS_DEFAULTS.slideVFlat}  slideVRoll=${PHYSICS_DEFAULTS.slideVRoll}  pushFriction=${PHYSICS_DEFAULTS.pushFriction}`)
+  console.log(`→ ${PUSHED_FRIC_GRID.length * COL_TRANSFER_GRID.length} Kombos`)
   console.log('='.repeat(80))
 
-  // Alle 64 Kombinationen aufbauen
-  const allPo: Po[] = []
-  for (const vFlat of VFLAT_GRID)
-    for (const vRoll of VROLL_GRID)
-      for (const friction of FRICTION_GRID)
-        allPo.push({ slideVFlat: vFlat, slideVRoll: vRoll, pushFriction: friction })
+  const allPo: Array<{ pf: number; ct: number }> = []
+  for (const pf of PUSHED_FRIC_GRID)
+    for (const ct of COL_TRANSFER_GRID)
+      allPo.push({ pf, ct })
 
   // ── Zeitschätzung ──────────────────────────────────────────────────────────
   const PROBE = 5
   console.log(`\nZeitschätzung (${PROBE} Probe-Kombos) …`)
   const t0    = Date.now()
-  for (let i = 0; i < PROBE; i++) runCombo(allPo[i])
+  for (let i = 0; i < PROBE; i++) runCombo(allPo[i].pf, allPo[i].ct)
   const probeMs  = Date.now() - t0
   const totalMs  = (probeMs / PROBE) * allPo.length
   const totalMin = totalMs / 60_000
@@ -634,7 +743,7 @@ function main(): void {
 
   if (totalMs > 10 * 60_000) {
     console.log('\nWARNUNG: Schätzung > 10 Minuten!')
-    console.log('Bitte VFLAT_GRID / VROLL_GRID / FRICTION_GRID auf je 3 Werte verkleinern (→ 27 Kombos).')
+    console.log('Bitte PUSHED_FRIC_GRID oder COL_TRANSFER_GRID verkleinern.')
     process.exit(1)
   }
   console.log()
@@ -643,19 +752,18 @@ function main(): void {
   const results: ComboResult[] = []
 
   for (let i = 0; i < allPo.length; i++) {
-    const po = allPo[i]
-    const r  = runCombo(po)
+    const { pf, ct } = allPo[i]
+    const r = runCombo(pf, ct)
     results.push(r)
 
     const p25ok = yn(r.push25No.pushedOutcome === 'in')
     const p35ok = yn(r.push35No.pushedOutcome === 'in')
     console.log(
       `[${String(i + 1).padStart(2)}/${allPo.length}]` +
-      ` vF=${String(po.slideVFlat).padStart(3)} vR=${String(po.slideVRoll).padStart(3)} fr=${po.pushFriction}` +
-      `  slide=${p(r.slideScat.inRate)} sl=${f(r.slideFlat)}cm` +
-      `  p25=${p25ok}/${p(r.push25Scat.inRate)}` +
-      `  p35=${p35ok}/${p(r.push35Scat.inRate)}` +
-      `  score=${r.score}/13`
+      ` pFric=${String(pf).padStart(3)} cT=${ct.toFixed(1)}` +
+      `  p25 med=${f(r.push25Scat.medianPushDy).padStart(4)}cm off@C=${p(r.push25Scat.offGivenContact)} ${p25ok}` +
+      `  p35 med=${f(r.push35Scat.medianPushDy).padStart(4)}cm off@C=${p(r.push35Scat.offGivenContact)} ${p35ok}` +
+      `  score=${r.score}/11`
     )
   }
 
@@ -664,7 +772,13 @@ function main(): void {
 
   // Detailanalyse für die beste Kombination
   const best = [...results].sort((a, b) => b.score - a.score)[0]
-  detailedAnalysis({ slideVFlat: best.vFlat, slideVRoll: best.vRoll, pushFriction: best.friction })
+  detailedAnalysis({
+    slideVFlat:        PHYSICS_DEFAULTS.slideVFlat,
+    slideVRoll:        PHYSICS_DEFAULTS.slideVRoll,
+    pushFriction:      PHYSICS_DEFAULTS.pushFriction,
+    pushedFriction:    best.pushedFric,
+    collisionTransfer: best.colTransfer,
+  })
 
   console.log('\nFERTIG')
 }
