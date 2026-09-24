@@ -7,7 +7,7 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "test": "vitest run",
+    "test": "vitest run && tsc --noEmit",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "bench:push": "tsx scripts/push-bench.ts"
