@@ -2052,6 +2052,17 @@ function render(ctx: CanvasRenderingContext2D, g: GameData, ts: number, bagDefor
 
   ctx.restore()
 
+  // Diagnostic overlay — always visible during gameplay
+  if (g.uiPhase === 'playing' || g.uiPhase === 'tutorial' || g.uiPhase === 'frameSummary') {
+    ctx.save()
+    ctx.font = '11px monospace'
+    ctx.textAlign = 'right'
+    ctx.textBaseline = 'top'
+    ctx.fillStyle = 'rgba(0,255,100,0.92)'
+    ctx.fillText(`phase=${g.phase}  zoom=${g.camZoom.toFixed(4)}`, lt.cssW - 6, lt.hudH + 4)
+    ctx.restore()
+  }
+
   drawPopups(ctx, g.popups, lt, ts)
   drawThrowZone(ctx, g, lt, ts)
   drawHUD(ctx, g, lt)
@@ -2645,6 +2656,7 @@ export function GameCanvas() {
 
     function loop(ts: number) {
       const prevPhase = g.phase
+      const prevZoom  = g.camZoom
 
       // Pre-schedule sounds to compensate for audio output latency so they
       // arrive at the speaker at the same moment the visual event is rendered.
@@ -2673,6 +2685,10 @@ export function GameCanvas() {
       }
 
       update(g, ts)
+
+      if (prevPhase !== g.phase) {
+        console.log(`[PHASE] ${prevPhase} → ${g.phase}  camZoom: ${prevZoom.toFixed(4)} → ${g.camZoom.toFixed(4)}`)
+      }
 
       if (prevPhase === 'flying' && g.phase === 'sliding' && g.pending) {
         const r   = g.pending.result
