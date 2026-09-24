@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { simulateThrow } from './simulate.js'
 import { createRng } from './rng.js'
-import { BOARD } from './config.js'
-import type { BoardState, ThrowInput } from './types.js'
+import { BOARD, PHYSICS_DEFAULTS } from './config.js'
+import type { BoardState, ThrowInput, PhysicsConfig } from './types.js'
 
 const emptyBoard: BoardState = { bags: [] }
 
@@ -146,7 +146,124 @@ describe('simulateThrow', () => {
     expect(inCount).toBeGreaterThanOrEqual(10)
   })
 
-  // ── 6. No bag outside plausible bounds ────────────────────────────────────
+  // ── 6. Tunneling: bag landing directly on a lying bag triggers collision ─────
+
+  it('bag landing on a lying bag: collision fires, thrown bag does not pass through', () => {
+    // Place a blocker directly where the thrown bag will land.
+    // With skill=1.0/focus=1.0 many throws land within bagDiameter of BLOCKER_Y.
+    const BLOCKER_Y = 50
+    const board: BoardState = {
+      bags: [{ id: 'blocker', teamId: 1, x: 0, y: BLOCKER_Y, side: 'fast' }],
+    }
+    const directShot = goodShot({
+      targetX: 0,
+      targetY: BLOCKER_Y,
+      power: 0.8,
+      spin: 0,
+      flightType: 'flat',
+      skillLevel: 1.0,
+      focus: 1.0,
+    })
+
+    let collisionCount = 0
+    let tunnelCount    = 0   // thrown bag final Y > blocker final Y (pass-through)
+
+    for (let seed = 0; seed < 50; seed++) {
+      const { result } = simulateThrow(board, directShot, createRng(seed))
+      const pushed = result.pushedBags.find(b => b.id === 'blocker')
+      if (pushed) {
+        collisionCount++
+        // The blocker must have moved forward; the thrown bag must not have overshot it.
+        if (result.thrownBag.finalY > pushed.finalY + 0.1) tunnelCount++
+      }
+    }
+
+    // With σ=6 cm many throws land near BLOCKER_Y — we expect ≥20 collisions.
+    expect(collisionCount).toBeGreaterThanOrEqual(20)
+    // Thrown bag must never end up ahead of the blocker it hit.
+    expect(tunnelCount).toBe(0)
+  })
+
+  // ── 7. Side field: fast-side bag slides further than slow-side bag ─────────
+
+  it('fast-side bag slides further than slow-side bag on average', () => {
+    // Use spin=+0.001 (fast side) vs spin=−0.001 (slow side): nearly identical
+    // lateral components so the only meaningful difference is friction multiplier.
+    // Same seed → same Gaussian offset → same landing point → only friction differs.
+    const base = goodShot({
+      targetX: 0,
+      targetY: 50,
+      power: 0.8,
+      flightType: 'flat',
+      skillLevel: 1.0,
+      focus: 1.0,
+    })
+
+    let fastFurtherCount = 0
+    const N = 50
+    for (let seed = 0; seed < N; seed++) {
+      const fast = simulateThrow(emptyBoard, { ...base, spin:  0.001 }, createRng(seed))
+      const slow = simulateThrow(emptyBoard, { ...base, spin: -0.001 }, createRng(seed))
+      if (fast.result.thrownBag.finalY > slow.result.thrownBag.finalY) fastFurtherCount++
+    }
+
+    // Fast-side friction < slow-side friction → should slide further in ≥70 % of seeds.
+    expect(fastFurtherCount).toBeGreaterThanOrEqual(35)
+  })
+
+  // ── 8. High-speed bag: swept CCD detects pass-through, kein Durchtunneln ────
+
+  it('high-speed bag: swept CCD detects pass-through, kein Durchtunneln', () => {
+    // u1 = 1.0 in Box-Muller → r = sqrt(-2*ln(1)) = 0 → gx = gy = 0.
+    // The bag lands exactly at targetX/targetY: fully deterministic, zero scatter.
+    // Call order inside simulateThrow: [bagId, u1, u2] — only 3 rng draws needed.
+    function zeroScatterRng() {
+      const vals = [0.5, 1.0, 0.5]   // u1 = 1.0 is the key value
+      let i = 0
+      return () => (i < vals.length ? vals[i++] : 0)
+    }
+
+    // slideVFlat = 2500 cm/s → step distance ≈ 40 cm (> bagDiameter 15 cm).
+    // Bag starts at y = 60 (outside circle [65, 95]), endpoint at y = 100 (outside
+    // on the far side): a pure endpoint check would miss this collision entirely.
+    const fastPhysics: PhysicsConfig = {
+      ...PHYSICS_DEFAULTS,
+      slideVFlat: 2500,
+      pushFriction: 0,
+    }
+    const BLOCKER_Y = 80
+    const board: BoardState = {
+      bags: [{ id: 'blocker', teamId: 1, x: 0, y: BLOCKER_Y, side: 'fast' }],
+    }
+
+    // Case A — head-on: bag at (0, 60), blocker at (0, 80)
+    {
+      const { result } = simulateThrow(
+        board,
+        goodShot({ targetX: 0, targetY: 60, power: 1.0, spin: 0, flightType: 'flat', skillLevel: 1.0, focus: 1.0 }),
+        zeroScatterRng(),
+        fastPhysics,
+      )
+      const pushed = result.pushedBags.find(b => b.id === 'blocker')
+      expect(pushed).toBeDefined()                                          // collision detected
+      expect(result.thrownBag.finalY).toBeLessThanOrEqual(pushed!.finalY) // kein Durchtunneln
+    }
+
+    // Case B — 5 cm lateral offset: bag at (5, 60), blocker at (0, 80)
+    {
+      const { result } = simulateThrow(
+        board,
+        goodShot({ targetX: 5, targetY: 60, power: 1.0, spin: 0, flightType: 'flat', skillLevel: 1.0, focus: 1.0 }),
+        zeroScatterRng(),
+        fastPhysics,
+      )
+      const pushed = result.pushedBags.find(b => b.id === 'blocker')
+      expect(pushed).toBeDefined()
+      expect(result.thrownBag.finalY).toBeLessThanOrEqual(pushed!.finalY)
+    }
+  })
+
+  // ── 9. No bag outside plausible bounds ────────────────────────────────────
 
   it('no bag lands outside plausible board area (no NaN / no explosion)', () => {
     const MARGIN = 3 * BOARD.length  // generous 3× board length

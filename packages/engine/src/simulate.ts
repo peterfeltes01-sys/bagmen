@@ -45,83 +45,162 @@ function holeOverlapFraction(bx: number, by: number): number {
   const r  = BOARD.holeRadius
   if (d >= 2 * r) return 0
   if (d < 0.001)  return 1
-  // Lens area for two equal circles: 2r²·arccos(d/2r) − (d/2)·√(4r²−d²)
   const lensArea = 2 * r * r * Math.acos(d / (2 * r)) - (d / 2) * Math.sqrt(4 * r * r - d * d)
   return lensArea / (Math.PI * r * r)
+}
+
+// Smallest t in [0,1] at which the segment P0→P1 first enters a circle of radius R around Q.
+// Returns 0 immediately when P0 is already inside the circle.
+// Returns null when the segment never enters the circle within this step.
+function sweptContactT(
+  p0x: number, p0y: number,
+  p1x: number, p1y: number,
+  qx:  number, qy:  number,
+  R:   number,
+): number | null {
+  const d0sq = (p0x - qx) ** 2 + (p0y - qy) ** 2
+  if (d0sq < R * R) return 0    // already inside: contact at t=0
+
+  const dx = p1x - p0x
+  const dy = p1y - p0y
+  const fx = p0x - qx
+  const fy = p0y - qy
+
+  const a = dx * dx + dy * dy
+  if (a < 1e-12) return null    // mover is stationary
+
+  const b    = 2 * (fx * dx + fy * dy)
+  const c    = fx * fx + fy * fy - R * R
+  const disc = b * b - 4 * a * c
+  if (disc < 0) return null     // path doesn't reach circle
+
+  const sq = Math.sqrt(disc)
+  const t1 = (-b - sq) / (2 * a)
+  const t2 = (-b + sq) / (2 * a)
+
+  if (t1 >= 0 && t1 <= 1) return t1
+  if (t2 >= 0 && t2 <= 1) return t2
+  return null
 }
 
 interface Mover { id: string; x: number; y: number; vx: number; vy: number; friction: number }
 
 function runSlide(
-  thrown: Mover,
+  thrown:    Mover,
   lyingBags: readonly BagOnBoard[],
-  pushedFriction: number,
-  collisionTransfer: number,
+  physics:   PhysicsConfig,
 ): Map<string, { x: number; y: number }> {
+  const { pushedFriction, collisionTransfer, sideFrictionFast, sideFrictionSlow } = physics
   const movers: Mover[] = [{ ...thrown }]
-  const statics = new Map(lyingBags.map(b => [b.id, { x: b.x, y: b.y }]))
-  const bagD2 = BOARD.bagDiameter * BOARD.bagDiameter
+  // Store full BagOnBoard so side-dependent friction can be computed on impact.
+  const statics = new Map<string, BagOnBoard>(lyingBags.map(b => [b.id, b]))
+  const R = BOARD.bagDiameter
 
   for (let step = 0; step < SLIDE.maxSteps; step++) {
-    // 1. Advance every mover one dt
-    for (const m of movers) {
-      const spd = Math.sqrt(m.vx * m.vx + m.vy * m.vy)
-      if (spd < 0.01) continue
-      const newSpd = Math.max(0, spd - m.friction * SLIDE.dt)
-      const scale = newSpd / spd
-      m.vx *= scale
-      m.vy *= scale
-      m.x += m.vx * SLIDE.dt
-      m.y += m.vy * SLIDE.dt
-    }
-
-    // 2. Detect collisions: mover → static bag
     const spawned: Mover[] = []
+
     for (const m of movers) {
       const spd = Math.sqrt(m.vx * m.vx + m.vy * m.vy)
       if (spd < 0.01) continue
-      for (const [sid, sp] of statics) {
-        const dx = sp.x - m.x
-        const dy = sp.y - m.y
-        if (dx * dx + dy * dy >= bagD2) continue
-        const d = Math.sqrt(dx * dx + dy * dy)
-        if (d < 0.001) continue
-        const nx = dx / d
-        const ny = dy / d
-        const dot = m.vx * nx + m.vy * ny
-        if (dot <= 0) {
-          // Overshoot: thrown bag landed past the static bag and is moving away.
-          // Only apply when mover has genuinely overshot in the throw direction.
-          if (m.y > sp.y && m.vy > 0) {
-            const dotR = -dot  // magnitude of the "wrong-way" velocity component
-            spawned.push({
-              id: sid, x: sp.x, y: sp.y,
-              vx: -dotR * nx * collisionTransfer,
-              vy: -dotR * ny * collisionTransfer,
-              friction: pushedFriction,
-            })
-            m.vx += dotR * nx
-            m.vy += dotR * ny
-            statics.delete(sid)
-            break
-          }
-          continue  // genuinely moving apart — no collision
+
+      // Apply friction and compute candidate new position.
+      const newSpd = Math.max(0, spd - m.friction * SLIDE.dt)
+      const scale  = newSpd / spd
+      const vxPost = m.vx * scale
+      const vyPost = m.vy * scale
+      const nx_    = m.x + vxPost * SLIDE.dt
+      const ny_    = m.y + vyPost * SLIDE.dt
+
+      // Find the earliest swept contact with any static bag this step.
+      let earliest: { t: number; sid: string; bag: BagOnBoard } | null = null
+      for (const [sid, bag] of statics) {
+        const t = sweptContactT(m.x, m.y, nx_, ny_, bag.x, bag.y, R)
+        if (t !== null && (earliest === null || t < earliest.t)) {
+          earliest = { t, sid, bag }
         }
+      }
+
+      if (earliest === null) {
+        // No contact this step.
+        m.x = nx_; m.y = ny_; m.vx = vxPost; m.vy = vyPost
+        continue
+      }
+
+      const { t, sid, bag } = earliest
+
+      // Contact position along the step.
+      let cx = m.x + vxPost * SLIDE.dt * t
+      let cy = m.y + vyPost * SLIDE.dt * t
+
+      // When the mover already overlaps the static (t=0), back it up to the
+      // approach-side contact surface so the collision fires head-on.
+      if (t === 0) {
+        const spd2 = Math.sqrt(vxPost * vxPost + vyPost * vyPost)
+        if (spd2 > 0.001) {
+          cx = bag.x - (vxPost / spd2) * R
+          cy = bag.y - (vyPost / spd2) * R
+        }
+      }
+
+      // Normal vector from contact point toward the static bag's centre.
+      const ex = bag.x - cx
+      const ey = bag.y - cy
+      const ed = Math.sqrt(ex * ex + ey * ey)
+
+      let nx: number, ny: number
+      if (ed < 0.001) {
+        // Centers coincide — use anti-velocity as separating normal.
+        const spd3 = Math.sqrt(vxPost * vxPost + vyPost * vyPost)
+        if (spd3 < 0.001) {
+          // Mover is also stationary: nothing to resolve, advance normally.
+          m.x = nx_; m.y = ny_; m.vx = vxPost; m.vy = vyPost
+          continue
+        }
+        nx = vxPost / spd3
+        ny = vyPost / spd3
+      } else {
+        nx = ex / ed
+        ny = ey / ed
+      }
+      const dot = vxPost * nx + vyPost * ny
+
+      const sf = bag.side === 'fast' ? sideFrictionFast : sideFrictionSlow
+      const pf = pushedFriction * sf
+
+      if (dot > 0) {
+        // Normal approach: mover is moving toward the static.
         spawned.push({
-          id: sid, x: sp.x, y: sp.y,
+          id: sid, x: bag.x, y: bag.y,
           vx: dot * nx * collisionTransfer,
           vy: dot * ny * collisionTransfer,
-          friction: pushedFriction,
+          friction: pf,
         })
-        m.vx -= dot * nx
-        m.vy -= dot * ny
+        m.x = cx; m.y = cy
+        m.vx = vxPost - dot * nx
+        m.vy = vyPost - dot * ny
         statics.delete(sid)
-        break  // one collision per mover per step
+      } else if (cy > bag.y && vyPost > 0) {
+        // Overshoot: mover landed past the static and is moving away in throw direction.
+        const dotR = -dot
+        spawned.push({
+          id: sid, x: bag.x, y: bag.y,
+          vx: -dotR * nx * collisionTransfer,
+          vy: -dotR * ny * collisionTransfer,
+          friction: pf,
+        })
+        m.x = cx; m.y = cy
+        m.vx = vxPost + dotR * nx
+        m.vy = vyPost + dotR * ny
+        statics.delete(sid)
+      } else {
+        // Moving apart or tangential pass — no impulse, advance normally.
+        // Static is kept so subsequent steps can re-check.
+        m.x = nx_; m.y = ny_; m.vx = vxPost; m.vy = vyPost
       }
     }
+
     movers.push(...spawned)
 
-    // 3. Early exit when nothing is moving
     if (movers.every(m => Math.sqrt(m.vx * m.vx + m.vy * m.vy) < 0.01)) break
   }
 
@@ -140,7 +219,6 @@ function buildTrajectory(
   const pts: Point[] = []
   for (let i = 0; i <= 40; i++) {
     const t = i / 40
-    // Lateral bow: parabolic arc toward spin side, peaks at mid-flight, resolves at landing
     pts.push({
       x: landX * t + spin * physics.spinCurvature * 4 * t * (1 - t),
       y: BOARD.throwLineY + (landY - BOARD.throwLineY) * t,
@@ -159,10 +237,8 @@ export function simulateThrow(
 ): { state: BoardState; trajectory: Point[]; result: ThrowResult } {
   const { teamId, targetX, targetY, power, spin, flightType, skillLevel, focus } = throwInput
 
-  // Deterministic bag ID from rng
   const bagId = `bag-${((rng() * 0xffffffff) >>> 0).toString(16)}`
 
-  // Sample landing point: Gaussian around target
   const s  = throwSigma(skillLevel, focus)
   const sx = s * (flightType === 'airmail' ? 0.7 : 1.0)
   const sy = s * (flightType === 'roll' ? 0.8 : flightType === 'airmail' ? 0.7 : 1.0)
@@ -172,7 +248,6 @@ export function simulateThrow(
 
   const trajectory = buildTrajectory(landX, landY, flightType, physics, spin)
 
-  // Bags landing directly in the hole need no further simulation
   if (inHole(landX, landY)) {
     return {
       state,
@@ -184,7 +259,6 @@ export function simulateThrow(
     }
   }
 
-  // Complete miss (off board before sliding)
   if (!onBoard(landX, landY)) {
     return {
       state,
@@ -201,22 +275,24 @@ export function simulateThrow(
   const baseV = { flat: physics.slideVFlat, roll: physics.slideVRoll, airmail: physics.slideVAirmail }[flightType]
   const v0    = power * baseV
 
+  // Apply side-dependent friction: fast-side slides further, slow-side stops sooner.
+  const sideMultiplier = side === 'fast' ? physics.sideFrictionFast : physics.sideFrictionSlow
   const thrown: Mover = {
     id: bagId,
     x: landX,
     y: landY,
     vx: spin * v0 * 0.3,
     vy: v0,
-    friction: physics.pushFriction,
+    friction: physics.pushFriction * sideMultiplier,
   }
 
-  const finalPos = runSlide(thrown, state.bags, physics.pushedFriction, physics.collisionTransfer)
+  const finalPos = runSlide(thrown, state.bags, physics)
 
   // Hole-rim drag-in: a lying bag that starts partially over the hole may fall in when hit
   for (const b of state.bags) {
     const pos = finalPos.get(b.id)
-    if (!pos) continue                   // not hit this throw
-    if (inHole(pos.x, pos.y)) continue  // already slid in naturally
+    if (!pos) continue
+    if (inHole(pos.x, pos.y)) continue
     const overlap = holeOverlapFraction(b.x, b.y)
     if (overlap > 0 && rng() < overlap) {
       pos.x = BOARD.holeX
@@ -224,7 +300,6 @@ export function simulateThrow(
     }
   }
 
-  // Build updated board state
   const thrownFinal = finalPos.get(bagId)!
   const thrownBag: BagResult = {
     id: bagId,
@@ -242,7 +317,6 @@ export function simulateThrow(
       const outcome = resolveOutcome(moved.x, moved.y)
       pushedBags.push({ id: existing.id, outcome, finalX: moved.x, finalY: moved.y })
       if (outcome === 'on') nextBags.push({ ...existing, x: moved.x, y: moved.y })
-      // 'in' or 'off' → removed from board
     } else {
       nextBags.push(existing)
     }
