@@ -12,6 +12,8 @@ export interface PhysicsConfig {
   pushFriction:       number  // cm/s², deceleration for the thrown bag
   pushedFriction:     number  // cm/s², deceleration for bags that were pushed
   spinCurvature:      number  // cm, max mid-flight lateral bow at spin=±1
+  sideFrictionFast:   number  // friction multiplier when fast-side is down (< 1 = slides more)
+  sideFrictionSlow:   number  // friction multiplier when slow-side is down (> 1 = slides less)
 }
 
 // ---- Point / Trajectory ----

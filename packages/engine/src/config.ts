@@ -35,10 +35,12 @@ export const PHYSICS_DEFAULTS: PhysicsConfig = {
   slideVRoll:        120,
   slideVFlat:        60,
   slideVAirmail:     20,
-  collisionTransfer: 1.0,
-  pushFriction:      200,
-  pushedFriction:    100,
-  spinCurvature:     20,
+  collisionTransfer:  1.0,
+  pushFriction:       200,
+  pushedFriction:     100,
+  spinCurvature:      20,
+  sideFrictionFast:   0.70,
+  sideFrictionSlow:   1.30,
 }
 
 // ENGINE_HASH is derived from default physics values so it updates automatically
@@ -67,4 +69,5 @@ export const ENGINE_HASH = fnv1a([
   PHYSICS_DEFAULTS.slideVFlat,        PHYSICS_DEFAULTS.slideVAirmail,
   PHYSICS_DEFAULTS.collisionTransfer, PHYSICS_DEFAULTS.pushFriction,
   PHYSICS_DEFAULTS.pushedFriction,    PHYSICS_DEFAULTS.spinCurvature,
+  PHYSICS_DEFAULTS.sideFrictionFast,  PHYSICS_DEFAULTS.sideFrictionSlow,
 ])

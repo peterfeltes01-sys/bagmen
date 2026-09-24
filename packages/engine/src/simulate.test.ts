@@ -211,7 +211,53 @@ describe('simulateThrow', () => {
     expect(fastFurtherCount).toBeGreaterThanOrEqual(35)
   })
 
-  // ── 8. High-speed bag: swept CCD detects pass-through, kein Durchtunneln ────
+  // ── 8. Side field: pushed bag with fast side slides further than slow side ──
+
+  it('pushed bag with fast side slides further than with slow side', () => {
+    // Same throw, same seed → same landing point, same collision impulse.
+    // Only the lying bag's side differs → different post-collision friction.
+    // fast: pushedFriction × 0.70 = 70 cm/s²   slow: × 1.30 = 130 cm/s²
+    const TARGET_Y = BOARD.holeY - 25  // 72 cm from front edge
+    const pushShot = goodShot({
+      targetX:    0,
+      targetY:    TARGET_Y - 20,
+      power:      0.8,
+      spin:       0,
+      flightType: 'roll',
+      skillLevel: 0.95,
+      focus:      0.95,
+    })
+
+    let contactCount    = 0
+    let fastFurtherCount = 0
+
+    for (let seed = 0; seed < 30; seed++) {
+      const fastBoard: BoardState = {
+        bags: [{ id: 'target', teamId: 1, x: 0, y: TARGET_Y, side: 'fast' }],
+      }
+      const slowBoard: BoardState = {
+        bags: [{ id: 'target', teamId: 1, x: 0, y: TARGET_Y, side: 'slow' }],
+      }
+
+      const fastRes = simulateThrow(fastBoard, pushShot, createRng(seed))
+      const slowRes = simulateThrow(slowBoard, pushShot, createRng(seed))
+
+      const fastPushed = fastRes.result.pushedBags.find(b => b.id === 'target')
+      const slowPushed = slowRes.result.pushedBags.find(b => b.id === 'target')
+
+      if (fastPushed && slowPushed && fastPushed.finalY > TARGET_Y && slowPushed.finalY > TARGET_Y) {
+        contactCount++
+        if (fastPushed.finalY > slowPushed.finalY) fastFurtherCount++
+      }
+    }
+
+    // Virtually every throw hits the target with these params.
+    expect(contactCount).toBeGreaterThanOrEqual(15)
+    // fast-side friction is 46 % lower → should slide further in ≥ 70 % of contacts.
+    expect(fastFurtherCount).toBeGreaterThanOrEqual(Math.floor(contactCount * 0.7))
+  })
+
+  // ── 9. High-speed bag: swept CCD detects pass-through, kein Durchtunneln ────
 
   it('high-speed bag: swept CCD detects pass-through, kein Durchtunneln', () => {
     // u1 = 1.0 in Box-Muller → r = sqrt(-2*ln(1)) = 0 → gx = gy = 0.
@@ -263,7 +309,7 @@ describe('simulateThrow', () => {
     }
   })
 
-  // ── 9. No bag outside plausible bounds ────────────────────────────────────
+  // ── 10. No bag outside plausible bounds ───────────────────────────────────
 
   it('no bag lands outside plausible board area (no NaN / no explosion)', () => {
     const MARGIN = 3 * BOARD.length  // generous 3× board length

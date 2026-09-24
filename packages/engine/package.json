@@ -9,9 +9,11 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "bench:push": "tsx scripts/push-bench.ts"
   },
   "devDependencies": {
+    "tsx": "^4.19.0",
     "typescript": "^5.5.0",
     "vitest": "^2.0.0"
   }
