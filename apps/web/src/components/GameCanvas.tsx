@@ -468,6 +468,10 @@ function update(g: GameData, ts: number) {
   if (g.uiPhase === 'setup' || g.uiPhase === 'matchOver') return
   if (g.helpOpen) return
 
+  const zoomTarget = (g.phase === 'flying' || g.phase === 'sliding')
+    ? 1 + 0.06 * g.cameraZoomStr : 1.0
+  g.camZoom = g.camZoom + (zoomTarget - g.camZoom) * 0.08
+
   if (g.uiPhase === 'frameSummary') {
     if (ts - g.frameSummaryAt >= FRAME_SUMMARY_MS) {
       if (g.matchWinner !== null) {
@@ -480,10 +484,6 @@ function update(g: GameData, ts: number) {
     }
     return
   }
-
-  const zoomTarget = (g.phase === 'flying' || g.phase === 'sliding')
-    ? 1 + 0.06 * g.cameraZoomStr : 1.0
-  g.camZoom = g.camZoom + (zoomTarget - g.camZoom) * 0.08
 
   if (g.popups.length > 0) g.popups = g.popups.filter(p => ts - p.startT < POPUP_DURATION)
 
@@ -594,7 +594,8 @@ function update(g: GameData, ts: number) {
       } else {
         g.frameState = { ...g.frameState, activeTeam: 0 }
       }
-      g.phase = 'idle'
+      g.phase   = 'idle'
+      g.camZoom = 1.0
       return
     }
 
@@ -615,8 +616,10 @@ function update(g: GameData, ts: number) {
       g.frameSummaryAt   = ts
       g.uiPhase          = 'frameSummary'
       g.phase            = 'idle'
+      g.camZoom          = 1.0
     } else {
-      g.phase = 'idle'
+      g.phase   = 'idle'
+      g.camZoom = 1.0
       if (g.frameState.activeTeam === 0) g.aim = autoAim(g.flightType, g.frameState.boardState)
       if (g.frameState.activeTeam === 1) g.aiThrowAt = ts + AI_THROW_DELAY_MS
     }
@@ -2570,8 +2573,8 @@ export function GameCanvas() {
       if (e.pointerId === activeAimId && g.aimDragOrigin) {
         const { bx: bx0, by: by0, sx: sx0, sy: sy0 } = g.aimDragOrigin
         const lt = g.layout
-        const xScale = 1 / pxPerCm(by0 / 120, lt)
-        const yScale = 120 / (lt.frontLeft.y - lt.backLeft.y)
+        const xScale = 1 / (pxPerCm(by0 / 120, lt) * g.camZoom)
+        const yScale = 120 / ((lt.frontLeft.y - lt.backLeft.y) * g.camZoom)
         g.aim = {
           bx: Math.max(-BOARD.halfWidth, Math.min(BOARD.halfWidth,
               bx0 + (sx - sx0) * g.aimSensitivity * xScale)),
